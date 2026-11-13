@@ -82,7 +82,7 @@ const en: Messages = {
   peekPlaceholder: (n) => `SpringNav: ${n} matching locations`,
   searchTitle: 'SpringNav: Search by URL path',
   searchPlaceholder: 'Type a path fragment to search, e.g. /system/user/list',
-  labelImplementation: 'implementation',
+  labelImplementation: 'definition',
   labelReference: 'reference',
   skippedAndFailed: (skipped, failed) =>
     `SpringNav: ${skipped} large files skipped, ${failed} files failed to parse`,
@@ -121,7 +121,7 @@ const zh: Messages = {
   peekPlaceholder: (n) => `SpringNav: 找到 ${n} 个匹配位置`,
   searchTitle: 'SpringNav: 按接口路径搜索',
   searchPlaceholder: '输入路径片段开始检索，例如 /system/user/list',
-  labelImplementation: '实现',
+  labelImplementation: '定义',
   labelReference: '引用',
   skippedAndFailed: (skipped, failed) =>
     `SpringNav: 跳过 ${skipped} 个大文件，${failed} 个文件解析失败`,

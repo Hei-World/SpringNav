@@ -4,8 +4,9 @@
   "command.reindex": "SpringNav: 重新加载索引",
   "command.reindexFolder": "SpringNav: 重建此项目索引",
   "command.goToImplementation": "转到Java实现",
-  "command.goToReference": "转到Java引用",
+  "command.goToReference": "转到 Java 引用",
   "config.title": "SpringNav",
-  "config.defaultDirection.description": "Ctrl/Cmd+点击（Go to Definition）的默认方向。down = 控制器→接口→实现→Mapper→XML，getXX→字段；up = 逐级反向；both = 两个方向都返回。",
-  "config.fallbackOnEmpty.description": "指定方向没有匹配结果时，是否自动回退到相反方向一级。"
+  "config.defaultDirection.description": "Ctrl/Cmd+点击采用「转到定义」语义：引用跳到其声明（方法调用→定义、get/set→实体字段、mapper→XML、Service 接口→实现）。无匹配时自动回退到「转到引用」。",
+  "config.fallbackOnEmpty.description": "指定方向没有匹配结果时，是否自动回退到相反方向一级。",
+  "command.goToDefinition": "转到 Java 定义"
 }

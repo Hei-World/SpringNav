@@ -934,7 +934,7 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
     //     this./bare -> current class (P1), static -> imported/same-package class (P1).
     for cs in &m.calls {
         index.call_owner.insert(cs.loc.clone(), fi);
-        let (targets, from_lombok, field_based) = match index.call_cache.get(&cs.loc).cloned() {
+        let (targets, _from_lombok, _field_based) = match index.call_cache.get(&cs.loc).cloned() {
             Some(v) => v,
             None => {
                 let mut targets = Vec::new();
@@ -1014,24 +1014,10 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
         if targets.is_empty() {
             continue;
         }
-        let owner_loc: Option<Loc> = cs
-            .owner_method
-            .and_then(|o| index.files[fi].methods.get(o).map(|x| x.loc.clone()));
+        // 统一语义：所有调用点锚定自身 —— down = 定义，up = 引用。
+        // 不再产生 声明->声明 的 owner 链（调用点已携带引用关系）。
         for tm in &targets {
-            if cs.kind == 0 {
-                out.push(k2(cs.loc.clone(), tm.clone()));
-                // Owner-declaration down edge ONLY for injected-field calls:
-                // declaration clicks must not chain into static/util targets.
-                if let Some(ol) = &owner_loc {
-                    if !from_lombok && field_based {
-                        out.push(k1(ol.clone(), tm.clone()));
-                    }
-                }
-            } else {
-                // this./bare calls anchor at the CALL SITE: down = definition,
-                // up = reference (method declaration -> callers).
-                out.push(k1(cs.loc.clone(), tm.clone()));
-            }
+            out.push(k1(cs.loc.clone(), tm.clone()));
         }
     }
     for (k, v) in cache_writes {
@@ -1147,7 +1133,8 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
             ms = find_lombok(index, &scope, &mr.name, None);
         }
         for x in ms {
-            out.push(k2(mr.loc.clone(), x));
+            // k1：引用 -> 定义（down），定义 -> 引用（up 反查）
+            out.push(k1(mr.loc.clone(), x));
         }
     }
 

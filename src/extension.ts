@@ -425,7 +425,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  // Right-click menu: Go to Java Implementation (down) / Reference (up).
+  // Native Go to References (Shift+F12 / Find All References): definition ->
+  // all references, falling back to definition when nothing references it.
+  context.subscriptions.push(
+    vscode.languages.registerReferenceProvider(JAVA_XML, {
+      provideReferences(document: vscode.TextDocument, position: vscode.Position) {
+        const snippet = document.lineAt(position.line).text;
+        const locs = native.resolveDirectional(
+          document.uri.toString(),
+          position.line,
+          position.character,
+          snippet,
+          'up',
+          fallbackOnEmpty()
+        );
+        return toLocations(locs);
+      },
+    })
+  );
+
+  // Right-click menu: Go to Java Reference (up) / Go to Java Definition (down).
   context.subscriptions.push(
     vscode.commands.registerCommand('springNav.goToImplementation', async () => {
       await reveal(resolveAt('down'), messages().labelImplementation);

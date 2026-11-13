@@ -2,7 +2,7 @@
   "name": "spring-nav",
   "displayName": "SpringNav",
   "description": "%extension.description%",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "publisher": "hei-world",
   "license": "MIT",
   "repository": {
@@ -46,7 +46,7 @@
       },
       {
         "command": "springNav.goToImplementation",
-        "title": "%command.goToImplementation%"
+        "title": "%command.goToDefinition%"
       },
       {
         "command": "springNav.goToReference",
@@ -69,12 +69,12 @@
       ],
       "editor/context": [
         {
-          "command": "springNav.goToImplementation",
+          "command": "springNav.goToReference",
           "when": "editorLangId == 'java' || editorLangId == 'xml'",
           "group": "navigation@1"
         },
         {
-          "command": "springNav.goToReference",
+          "command": "springNav.goToImplementation",
           "when": "editorLangId == 'java' || editorLangId == 'xml'",
           "group": "navigation@2"
         }

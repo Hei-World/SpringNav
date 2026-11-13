@@ -681,9 +681,9 @@ function check(name, fn) {
     return 'ok';
   });
 
-  check('D-06 fallback: Controller has no up -> falls back to down (Service)', () => {
+  check('D-06 定义/引用模型: Controller 方法声明点击 -> 无跳转（声明无引用方）', () => {
     const out = resolveDir(ctrl, 'getInfo(Long id)', 'up');
-    if (!out.some((l) => l.uri.includes(svc))) throw new Error('no service fallback: ' + JSON.stringify(out));
+    if (out.length !== 0) throw new Error('expected empty (声明无引用): ' + JSON.stringify(out));
     return 'ok';
   });
 

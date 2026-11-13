@@ -6,6 +6,7 @@
   "command.goToImplementation": "Go to Java Implementation",
   "command.goToReference": "Go to Java Reference",
   "config.title": "SpringNav",
-  "config.defaultDirection.description": "Default direction for Ctrl/Cmd+Click (Go to Definition). down = Controller -> Service -> Impl -> Mapper -> XML, getXX -> field; up = reverse, one level at a time; both = both directions.",
-  "config.fallbackOnEmpty.description": "When the requested direction has no match, automatically fall back to the opposite direction for one level."
+  "config.defaultDirection.description": "Go to Definition semantics for Ctrl/Cmd+Click: a reference jumps to its declaration (method call -> method, get/set -> entity field, mapper -> XML, Service interface -> Impl). When nothing matches, falls back to References.",
+  "config.fallbackOnEmpty.description": "When the requested direction has no match, automatically fall back to the opposite direction for one level.",
+  "command.goToDefinition": "Go to Java Definition"
 }

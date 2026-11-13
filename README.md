@@ -23,7 +23,7 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 - 解析器是 Rust 手写轻量解析器（逐行扫描 + 状态机 + 正则），**不构建完整 AST**。
 - 索引**只存元数据**（类名、方法名、参数类型、文件 URI、行号、注解路径、字段类型），不存文件内容、不存 AST（P-02）。典型项目内存占用几十 MB 以内。
 - 索引构建阶段把**所有跳转关系预计算成有向边（`down` / `up`）**，并登记光标 span。查询时只做「`(uri,line)` 找 span → 命中符号 → 查方向表 → 去重排序」，**纯内存查表，无磁盘 I/O、不重新解析文件**，Rust 侧微秒级（P-03）。
-- **方向语义**：`down` = 控制器 → 接口方法 → 实现类 → Mapper → XML，以及 `getXX/setXX` → 实体字段；`up` = 逐级反向。多结果就是邻接表里的多个位置，TS 直接映射成 `Location[]`，VS Code 以 peek 列表展示（M-01）。
+- **定义/引用语义**：所有跳转关系都锚定在「引用 ↔ 定义」上——引用（调用点、字段引用、`Cls::method`、类型名）→ 定义（方法/字段/类/XML 声明）；反方向即「转到引用」。`down` = 转到定义，`up` = 转到引用，两者互为回退。多结果就是邻接表里的多个位置，TS 直接映射成 `Location[]`，VS Code 以 peek 列表展示（M-01）。
 - `buildIndex` 用 napi `AsyncTask` 在 libuv 线程池异步构建，**不阻塞扩展激活**；查询走 `RwLock` 读锁。
 
 ---
@@ -77,10 +77,10 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 
 | 入口 | 行为 |
 | --- | --- |
-| `Ctrl` / `Cmd` + 鼠标左键点击（内置 Go to Definition） | **向下**；该方向无匹配时自动**回退向上**一级（可配置） |
-| `F12` | **向上**（覆盖了 VS Code 内置 F12 的 Go to Definition，仅 java/xml 生效） |
-| 右键菜单 **转到Java实现** | 向下，直接跳转（多结果弹 peek 列表） |
-| 右键菜单 **转到Java引用** | 向上，直接跳转（多结果弹 peek 列表） |
+| `Ctrl` / `Cmd` + 鼠标左键点击（Go to Definition 转到 Java 定义） | **引用 → 定义**：方法调用→定义、get/set 调用→实体字段、常量/枚举引用→声明、`Cls::method` → 方法/字段、Mapper → XML、Service 接口 → 实现；该方向无匹配时自动**回退到转到引用** |
+| `F12`（转到 Java 引用） | **定义 → 引用**：方法声明→调用点、实体字段→get/set 与引用、常量→引用点、XML → Mapper、类 → 类型引用；无引用时自动**回退到转到定义** |
+| `Shift+F12` / 右键「查找所有引用」 | 原生 Go to References（已注册 ReferenceProvider），语义同「转到 Java 引用」，多结果以 peek 列表展示 |
+| 右键菜单 | 第一项「转到 Java 引用」，第二项「转到 Java 定义」 |
 
 > 默认不额外注册其它键盘快捷键，避免与系统/其它插件冲突。如果确实需要，可自行在 `keybindings.json` 给 `springNav.goToImplementation` / `springNav.goToReference` 绑定任意键位。
 
@@ -92,7 +92,7 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 
 插件默认只注册 `Ctrl/Cmd+点击`（向下）和 `F12`（向上）两个入口，不额外占用键盘组合，避免与系统或其它插件冲突。
 
-如果你想要更多键位，`转到Java实现` / `转到Java引用` 是普通命令，可在 VS Code 的 **Keyboard Shortcuts**（`Ctrl+K Ctrl+S` / `Cmd+K Cmd+S`）里搜索并绑定，或在 `keybindings.json` 中自行添加，例如：
+如果你想要更多键位，`转到 Java 定义`（`springNav.goToImplementation`）/ `转到 Java 引用`（`springNav.goToReference`）是普通命令，可在 VS Code 的 **Keyboard Shortcuts**（`Ctrl+K Ctrl+S` / `Cmd+K Cmd+S`）里搜索并绑定，或在 `keybindings.json` 中自行添加，例如：
 
 ```json
 [
@@ -297,8 +297,8 @@ Controller → Service → Impl → Mapper → XML 双向链、**向下/向上�
 | `screenshots/19-multiroot.png` | 多根工作区：2 项目 / 2 模块 / 3 文件 |
 | `screenshots/20-explorer-reindex.png` | 资源管理器右键：`SpringNav: 重建此项目索引` |
 | `screenshots/21-reindex-folder-done.png` | 单项目重建完成（`ruoyi-admin`，索引共 150 文件 / 6 模块） |
-| `screenshots/10-context-menu.png` | 右键菜单：`转到Java实现` / `转到Java引用` |
-| `screenshots/11-context-menu-jump.png` | 右键「转到Java实现」实际跳转到字段 |
+| `screenshots/10-context-menu.png` | 右键菜单：`转到 Java 引用` / `转到 Java 定义` |
+| `screenshots/11-context-menu-jump.png` | 右键「转到 Java 定义」实际跳转到字段 |
 | `screenshots/12-search-empty.png` | 路径搜索打开时列表为空 |
 | `screenshots/13-search-fuzzy.png` | 输入 `user list` 模糊检索，显示完整路径 |
 | `screenshots/14-search-slash-fuzzy.png` | 输入 `/sys/user/list` 模糊命中 `/system/user/list` |
