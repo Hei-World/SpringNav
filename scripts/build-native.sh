@@ -60,16 +60,6 @@ else
   esac
 fi
 
-REL="$CARGO_TARGET_DIR/release"
-SRC=""
-for f in "$REL/libspring_nav.so" "$REL/libspring_nav.dylib" "$REL/spring_nav.dll"; do
-  if [ -f "$f" ]; then SRC="$f"; break; fi
-done
-if [ -z "$SRC" ]; then
-  echo "error: napi library not found under $REL" >&2
-  exit 1
-fi
-
 mkdir -p "$ROOT/native"
 cp "$SRC" "$ROOT/native/$NODE_NAME"
 echo "Built $ROOT/native/$NODE_NAME"
