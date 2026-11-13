@@ -144,54 +144,117 @@ mapper = ["*Mapper", "*Dao", "*Repository"]
 
 ## 构建与多平台分发
 
-### 本机构建（Linux x64 gnu）
+### 通用前置
 
-前置：Node ≥ 18、Rust（stable）、gcc/make。
+- Node ≥ 18、Rust stable（`rustup`）
+- 平台额外依赖：
+  - **Linux**：gcc / make；构建 musl 目标需 `musl-tools`
+  - **macOS**：Xcode Command Line Tools（`xcode-select --install`）
+  - **Windows**：Visual Studio Build Tools（MSVC）+ Windows SDK
+
+### 本机构建（当前平台）
 
 ```bash
-npm install           # 仅开发依赖：typescript / @types/vscode / @types/node
-npm run build:native  # cargo build --release，产出 native/spring-nav.<platform>.node
-npm run compile       # tsc -> out/extension.js
-npm run build         # 两者都做
+npm install            # 仅开发依赖：typescript / @types/vscode / @types/node
+npm run build:native   # cargo build --release -> native/spring-nav.<platform>.node
+npm run compile        # tsc -> out/extension.js
+npm run build          # 以上两步
+npm run package        # 编译 + 构建 + 打包 VSIX
 ```
 
 `scripts/build-native.sh` 会把 `target/release/libspring_nav.{so,dylib,dll}` 复制并改名为
-`native/spring-nav.<platform>-<arch>-<libc>.node`（Windows 为 `...-msvc.node`）。
+`native/spring-nav.<platform>-<arch>[-<libc>].node`（Windows 为 `...-msvc.node`）。
 `native/index.js` 依据 `process.platform` / `process.arch` / libc(gnu/musl) 选择对应 `.node`。
-大体积产物可用 `CARGO_TARGET_DIR` 重定向，例如：
+大体积产物可用 `CARGO_TARGET_DIR` 重定向：
 
 ```bash
 CARGO_TARGET_DIR=/tmp/springnav-target npm run build:native
 ```
 
-### 打包 VSIX
+### macOS 打包
 
 ```bash
-npm run package       # 编译 + 构建 + npx @vscode/vsce package --no-dependencies
+xcode-select --install                    # 首次需要
+rustup target add aarch64-apple-darwin    # Apple Silicon
+rustup target add x86_64-apple-darwin     # Intel
+
+npm install
+npm run build:native                      # 产出 native/spring-nav.darwin-arm64.node（或 darwin-x64）
+npm run package                           # 生成 spring-nav-0.1.0.vsix
 ```
 
-注意：`.node` 是平台相关的二进制，需把目标平台的 `.node` 放进 `native/` 后再打包；`.vscodeignore` 已排除 `rust/`、`src/`、`test/` 等源码目录。
+同时支持 Apple Silicon + Intel（一个 VSIX 内含两个 `.node`）：
 
-### 多平台 `.node`
+```bash
+cargo build --release --target aarch64-apple-darwin
+cargo build --release --target x86_64-apple-darwin
+cp rust/target/aarch64-apple-darwin/release/libspring_nav.dylib native/spring-nav.darwin-arm64.node
+cp rust/target/x86_64-apple-darwin/release/libspring_nav.dylib  native/spring-nav.darwin-x64.node
+npm run package
+```
 
-本机只能产出当前平台的 `.node`。Windows / macOS / Linux 各架构由
-[`.github/workflows/build.yml`](.github/workflows/build.yml) 的矩阵编译并上传 artifact：
+> 也可以用 `lipo -create` 合成 universal `.node`；更简单的做法是各放一个，加载器按 `process.arch` 选择。
 
-| 平台 | 产物 |
-| --- | --- |
-| Linux x64 / arm64 gnu、x64 musl | `spring-nav.linux-x64-gnu.node` 等 |
-| macOS x64 / arm64 | `spring-nav.darwin-x64.node` / `darwin-arm64.node` |
-| Windows x64 / arm64 MSVC | `spring-nav.win32-x64-msvc.node` 等 |
+### Windows 打包
 
-分发做法：CI 产出各平台 `.node` → 放入 `native/` → 打包 VSIX（VSIX 可同时包含多个平台的 `.node`，加载器自动挑选），或按平台分别发布。`package.json` 的 `napi.targets` 列出了支持的目标三元组。
+```powershell
+rustup target add x86_64-pc-windows-msvc
+npm install
+npm run build:native      # native/spring-nav.win32-x64-msvc.node（建议在 Git Bash 下执行脚本）
+npm run package
+```
+
+需要安装 VS Build Tools（C++ 工作负载）。ARM64 用 `aarch64-pc-windows-msvc`。
+
+### Linux 打包
+
+```bash
+npm install
+npm run build:native      # native/spring-nav.linux-x64-gnu.node
+npm run package
+```
+
+musl（Alpine）：`rustup target add x86_64-unknown-linux-musl`，安装 `musl-tools`，产物为 `spring-nav.linux-x64-musl.node`。
+
+### 交叉编译说明
+
+- **不能在一个系统上直接产出另一个系统的 `.node`**：macOS 需要 Apple SDK、Windows 需要 MSVC，通常必须在本机构建（或用对应 runner 的 CI）。
+- 推荐用 [`.github/workflows/build.yml`](.github/workflows/build.yml) 的矩阵（ubuntu / macos / windows）产出各平台 `.node`，下载 artifact 后统一放进 `native/`。
+
+### 全平台 VSIX
+
+一个 VSIX 可以同时包含多个平台的 `.node`，运行时由 `native/index.js` 自动挑选：
+
+```
+native/spring-nav.linux-x64-gnu.node
+native/spring-nav.linux-arm64-gnu.node
+native/spring-nav.linux-x64-musl.node
+native/spring-nav.darwin-x64.node
+native/spring-nav.darwin-arm64.node
+native/spring-nav.win32-x64-msvc.node
+native/spring-nav.win32-arm64-msvc.node
+```
+
+```bash
+npm run package     # 把上面所有 .node 一起打进 spring-nav-<version>.vsix
+```
+
+### 分发
+
+- 应用市场：`npx @vscode/vsce publish`（需 `publisher` + Marketplace PAT）。
+- 离线：分发 `.vsix`，用户执行 `code --install-extension spring-nav-0.1.0.vsix`。
+
+> macOS 小提示：若本地调试时 `.node` 被 Gatekeeper 隔离，可执行 `xattr -d com.apple.quarantine <file>.node`；通过 VS Code 正常安装 VSIX 一般无需处理。
+
+`package.json` 的 `napi.targets` 列出了支持的目标三元组。
 
 ---
 
 ## 测试
 
 ```bash
-node scripts/smoke.js                       # 合成最小 SpringBoot 工程，25 项断言
-node test/harness.js /path/to/RuoYi-Vue     # 真实开源项目端到端断言（24 项）
+node scripts/smoke.js                       # 合成最小 SpringBoot 工程，27 项断言
+node test/harness.js /path/to/RuoYi-Vue     # 真实开源项目端到端断言（26 项）
 ```
 
 `smoke.js` 自建一个 Controller/Service/Impl/Mapper/XML/Entity 齐全的临时工程；`harness.js` 对 [RuoYi-Vue](https://github.com/yangzongzhuan/RuoYi-Vue) 验证
@@ -199,24 +262,26 @@ Controller → Service → Impl → Mapper → XML 双向链、**向下/向上�
 
 ---
 
-## 演示截图（RuoYi-Vue 实机）
+## 演示截图（RuoYi-Vue 实机，本地文件）
 
-| 截图 | 说明 |
+以下截图保存在本地 `screenshots/` 目录，**已加入 `.gitignore`，不提交到仓库**（避免二进制文件入库），也不会打进 VSIX。需要查看时直接在项目根目录打开该文件夹。
+
+| 文件 | 说明 |
 | --- | --- |
-| `docs/01-open.png` | 打开工程，光标在 Controller 的 `userService.selectUserList` 调用点 |
-| `docs/02-ctrlclick-down.png` | `Ctrl+点击` 控制器 → Service 接口方法（向下） |
-| `docs/03-down-service-to-impl.png` | 接口 → 实现类（向下） |
-| `docs/04-down-impl-to-mapper.png` | 实现类 → Mapper（向下） |
-| `docs/05-down-mapper-to-xml.png` | Mapper → XML 语句（向下） |
-| `docs/06-up-xml-to-mapper.png` | `F12` XML → Mapper（向上） |
-| `docs/07-up-service-to-controller-peek.png` | 接口 → 控制器（向上，多结果 Peek 列表） |
-| `docs/08-entity-getter-to-field.png` | `getXX` → 实体字段（向下，直接跳转） |
-| `docs/09-entity-field-to-accessors.png` | 字段 → get/set（向上，Peek 列表） |
-| `docs/10-context-menu.png` | 右键菜单：`转到Java实现` / `转到Java引用` |
-| `docs/11-context-menu-jump.png` | 右键「转到Java实现」实际跳转到字段 |
-| `docs/12-search-empty.png` | 路径搜索打开时列表为空 |
-| `docs/13-search-fuzzy.png` | 输入 `user list` 模糊检索，显示完整路径 |
-| `docs/14-search-slash-fuzzy.png` | 输入 `/sys/user/list` 模糊命中 `/system/user/list` |
+| `screenshots/01-open.png` | 打开工程，光标在 Controller 的 `userService.selectUserList` 调用点 |
+| `screenshots/02-ctrlclick-down.png` | `Ctrl+点击` 控制器 → Service 接口方法（向下） |
+| `screenshots/03-down-service-to-impl.png` | 接口 → 实现类（向下） |
+| `screenshots/04-down-impl-to-mapper.png` | 实现类 → Mapper（向下） |
+| `screenshots/05-down-mapper-to-xml.png` | Mapper → XML 语句（向下） |
+| `screenshots/06-up-xml-to-mapper.png` | `F12` XML → Mapper（向上） |
+| `screenshots/07-up-service-to-controller-peek.png` | 接口 → 控制器（向上，多结果 Peek 列表） |
+| `screenshots/08-entity-getter-to-field.png` | `getXX` → 实体字段（向下，直接跳转） |
+| `screenshots/09-entity-field-to-accessors.png` | 字段 → get/set（向上，Peek 列表） |
+| `screenshots/10-context-menu.png` | 右键菜单：`转到Java实现` / `转到Java引用` |
+| `screenshots/11-context-menu-jump.png` | 右键「转到Java实现」实际跳转到字段 |
+| `screenshots/12-search-empty.png` | 路径搜索打开时列表为空 |
+| `screenshots/13-search-fuzzy.png` | 输入 `user list` 模糊检索，显示完整路径 |
+| `screenshots/14-search-slash-fuzzy.png` | 输入 `/sys/user/list` 模糊命中 `/system/user/list` |
 
 ---
 
@@ -244,6 +309,7 @@ SpringNav/
 ├── scripts/smoke.js            # 合成工程自检
 ├── test/harness.js             # RuoYi 端到端断言
 ├── rust/                       # napi-rs crate（解析器/索引/查询）
+├── screenshots/                # 本地演示截图（.gitignore 忽略，不入库、不打进 VSIX）
 ├── .idea/spring-nav.toml       # 配置示例
 ├── schemas/spring-nav.schema.json
 └── .github/workflows/build.yml # 多平台矩阵

@@ -1,8 +1,28 @@
+# 依赖与构建产物
 node_modules/
 out/
 rust/target/
+*.tsbuildinfo
+coverage/
+
+# 原生模块与安装包（平台相关二进制，不入库）
 native/*.node
 *.vsix
+
+# 测试
 .vscode-test/
-*.log
+
+# 本地演示截图（不入库）
+screenshots/
+
+# IDE / 操作系统
+.idea/*
+!.idea/spring-nav.toml
 .DS_Store
+Thumbs.db
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+*.swp
+*.swo

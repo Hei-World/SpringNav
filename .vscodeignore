@@ -5,9 +5,12 @@ rust/**
 scripts/**
 test/**
 .github/**
-docs/**
+screenshots/**
+.idea/**
 .gitignore
 tsconfig.json
-**/*.map
-**/.DS_Store
+package-lock.json
 Cargo.lock
+**/*.map
+**/*.tsbuildinfo
+**/.DS_Store
