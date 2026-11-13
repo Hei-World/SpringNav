@@ -2,7 +2,7 @@
   "name": "spring-nav",
   "displayName": "SpringNav",
   "description": "%extension.description%",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "hei-world",
   "license": "MIT",
   "repository": {

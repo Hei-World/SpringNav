@@ -194,6 +194,59 @@ fn classify(m: &FileModel, cfg: &Config) -> Role {
     Role::Other
 }
 
+/// Context-aware type resolution: a SIMPLE type name is resolved against the
+/// referencing file's imports first, then its own package, then a unique
+/// project-wide simple name. Ambiguous names (two `User` classes) resolve to
+/// NOTHING instead of both — accuracy first.
+pub(crate) fn resolve_type_files_ctx(index: &Index, fi: usize, t: &str) -> Vec<usize> {
+    if t.contains('.') {
+        return resolve_type_files(index, t); // FQCN: exact
+    }
+    let simple = strip_to_simple(t);
+    if simple.is_empty() {
+        return Vec::new();
+    }
+    let m = &index.files[fi];
+    let suffix = format!(".{}", simple);
+    let mut out: Vec<usize> = Vec::new();
+    // 1) explicit imports of the referencing file
+    for imp in &m.imports {
+        if imp.as_str() == simple || imp.ends_with(&suffix) {
+            if let Some(&tf) = index.by_fqcn.get(imp.as_str()) {
+                if !out.contains(&tf) {
+                    out.push(tf);
+                }
+            }
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    // 2) same package
+    let pkg = m
+        .fqcn
+        .rsplit_once('.')
+        .map(|(p, _)| p.to_string())
+        .unwrap_or_default();
+    if let Some(files) = index.by_package.get(&pkg) {
+        for &tf in files {
+            if index.files[tf].class_name == simple && !out.contains(&tf) {
+                out.push(tf);
+            }
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    // 3) unique project-wide simple name
+    if let Some(v) = index.by_simple.get(&simple) {
+        if v.len() == 1 {
+            out.push(v[0]);
+        }
+    }
+    out
+}
+
 pub(crate) fn resolve_type_files(index: &Index, t: &str) -> Vec<usize> {
     let simple = strip_to_simple(t);
     let mut out: Vec<usize> = Vec::new();
@@ -306,7 +359,7 @@ pub(crate) fn resolve_field_type(
                 }
             }
             for s in &index.files[cur].supers {
-                for si in resolve_type_files(index, s) {
+                for si in resolve_type_files_ctx(index, fi, s) {
                     next.push(si);
                 }
             }
@@ -954,7 +1007,7 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
                     _ => {
                         if let Some(t) = resolve_field_type(index, fi, &cs.field, cfg) {
                             field_based = true;
-                            let tfiles = resolve_type_files(index, &t);
+                            let tfiles = resolve_type_files_ctx(index, fi, &t);
                             if !tfiles.is_empty() {
                                 targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
                                 if targets.is_empty() {
@@ -974,7 +1027,7 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
                                     v.method == Some(owner) && v.name == cs.field
                                 }).map(|v| v.type_simple.clone());
                                 if let Some(t) = ty {
-                                    let mut tfiles = resolve_type_files(index, &t);
+                                    let mut tfiles = resolve_type_files_ctx(index, fi, &t);
                                     if tfiles.is_empty() {
                                         tfiles = resolve_class(index, fi, &t);
                                     }
@@ -1140,7 +1193,7 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
 
     // (f) field declaration -> its type's class declaration (convenience)
     for f in &m.fields {
-        let targets: Vec<Loc> = resolve_type_files(index, &f.type_simple)
+        let targets: Vec<Loc> = resolve_type_files_ctx(index, fi, &f.type_simple)
             .iter()
             .map(|&ti| index.files[ti].class_loc.clone())
             .collect();
@@ -1223,7 +1276,7 @@ pub(crate) fn resolve_class(index: &Index, fi: usize, simple: &str) -> Vec<usize
     if out.is_empty() {
         let suffix = format!(".{}", simple);
         for imp in &m.imports {
-            if imp == simple || imp.ends_with(&suffix) {
+            if imp.as_str() == simple || imp.ends_with(&suffix) {
                 if let Some(&tf) = index.by_fqcn.get(imp.as_str()) {
                     if !out.contains(&tf) {
                         out.push(tf);

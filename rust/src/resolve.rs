@@ -2,7 +2,7 @@
 
 use crate::config::Config;
 use crate::index::{
-    find_lombok, find_methods, normalize_url_path, resolve_field_type, resolve_type_files, Index,
+    find_lombok, find_methods, normalize_url_path, resolve_field_type, Index,
 };
 use crate::model::*;
 use regex::Regex;
@@ -119,7 +119,7 @@ fn fallback_targets(
             continue;
         }
         if let Some(t) = resolve_field_type(index, fi, field, cfg) {
-            let tfiles = resolve_type_files(index, &t);
+            let tfiles = crate::index::resolve_type_files_ctx(index, fi, &t);
             if !tfiles.is_empty() {
                 let mut ms = find_methods(index, &tfiles, method, None);
                 if ms.is_empty() {

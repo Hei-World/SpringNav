@@ -286,6 +286,17 @@ pub fn resolve_definition(
     }
 }
 
+/// TEMP debug
+#[napi]
+pub fn dump_files() -> String {
+    let g = match state().read() { Ok(v) => v, Err(_) => return "no state".into() };
+    let mut out = String::new();
+    for f in &g.index.files {
+        out += &format!("[{} role={:?} fields={}] ", f.path.rsplit('/').next().unwrap_or("?"), f.role, f.fields.iter().map(|x| x.name.clone()).collect::<Vec<_>>().join(","));
+    }
+    out
+}
+
 /// Directional resolution used by Ctrl/Cmd+Click (down) and F12 (up).
 #[napi]
 pub fn resolve_directional(
