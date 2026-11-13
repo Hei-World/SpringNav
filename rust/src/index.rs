@@ -1224,11 +1224,16 @@ pub fn apply_changes(
     }
 
     // ---- pure content edit: incremental ----
-    // Capture (fi, new model) BEFORE removing by_uri entries.
+    // Capture (fi, new model) BEFORE removing by_uri entries. The parsed
+    // model has no role yet — classify it here, otherwise role-dependent
+    // edge sections ((b) interface→impl, (c) mapper→XML, Controller path
+    // entries) are silently dropped on every save.
     let mut replacements: Vec<(usize, FileModel)> = Vec::new();
     for (uri, model) in &changes {
         if let (Some(&fi), Some(m)) = (state.index.by_uri.get(uri), model) {
-            replacements.push((fi, m.clone()));
+            let mut m = m.clone();
+            m.role = classify(&m, cfg);
+            replacements.push((fi, m));
         }
     }
 
@@ -1432,6 +1437,64 @@ mod tests {
         assert_eq!(st.index.files.len(), 1);
         assert_eq!(st.index.edges.len(), before);
         assert!(st.index.by_uri.contains_key("file:///p/A.java"));
+    }
+
+    #[test]
+    fn incremental_update_preserves_role_edges() {
+        // Save a mapper file (updateFiles path) — its mapper->XML statement
+        // edges must survive the incremental rebuild (role re-classified).
+        let mut mapper = FileModel {
+            uri: "file:///p/M.java".into(),
+            path: "/p/src/main/java/x/SysUserMapper.java".into(),
+            kind: FileKind::Java,
+            project_root: "/p".into(),
+            class_name: "SysUserMapper".into(),
+            fqcn: "x.SysUserMapper".into(),
+            ..Default::default()
+        };
+        let md = MethodDecl {
+            name: "selectUserList".into(),
+            param_types: vec!["SysUser".into()],
+            loc: Loc::new("file:///p/M.java", 20, 25),
+            ..Default::default()
+        };
+        mapper.methods = vec![md];
+        let mut xml = FileModel {
+            uri: "file:///p/M.xml".into(),
+            path: "/p/src/main/resources/SysUserMapper.xml".into(),
+            kind: FileKind::Xml,
+            project_root: "/p".into(),
+            ..Default::default()
+        };
+        xml.project_root = "/p".into();
+        xml.xml_namespace = "x.SysUserMapper".into();
+        xml.xml_stmts = vec![XmlStmt {
+            namespace: "x.SysUserMapper".into(),
+            id: "selectUserList".into(),
+            loc: Loc::new("file:///p/M.xml", 3, 10),
+            span: (10, 24),
+        }];
+        let cfg = Config::default();
+        let mut st = build_index_from_files(
+            vec![mapper.clone(), xml],
+            &cfg,
+            vec!["/p".into()],
+            vec!["/p".into()],
+            1,
+            0,
+            0,
+        );
+        let dl = Loc::new("file:///p/M.java", 20, 25);
+        assert_eq!(st.index.down.get(&dl).map(|v| v.len()), Some(1));
+        // Simulate a save of the mapper file (same content).
+        let mut again = mapper;
+        again.role = Role::Mapper;
+        apply_changes(&mut st, vec![("file:///p/M.java".into(), Some(again))], &cfg);
+        assert_eq!(
+            st.index.down.get(&dl).map(|v| v.len()),
+            Some(1),
+            "mapper->XML edges must survive a save"
+        );
     }
 
     #[test]

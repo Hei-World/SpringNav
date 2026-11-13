@@ -348,6 +348,13 @@ function check(name, fn) {
     return `-> ${out.length}`;
   });
 
+  check('D-03b down: Impl 方法声明名 -> 接口（不进 Mapper）', () => {
+    const out = resolveDir(impl, 'getInfo(Long id)', 'down', 5);
+    if (!out.some((l) => l.uri.includes(svc))) throw new Error('no interface: ' + JSON.stringify(out));
+    if (out.some((l) => l.uri.includes(mapper))) throw new Error('unexpected mapper: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
   check('D-04 down: Mapper -> XML; up: XML -> Mapper', () => {
     const down = resolveDir(mapper, 'selectById(Long id)', 'down');
     const up = resolveDir(xml, '<select id="selectById"', 'up');

@@ -289,12 +289,19 @@ fn do_update(uris: &[String]) -> BuildResult {
     // workspace root) so scoped config keeps working after a save.
     for uri in uris {
         let path = scanner::uri_to_path(uri);
+        // Normalize: consumers must pass file:// URIs; accept a bare path too
+        // (otherwise the change is treated as an unknown file and duplicated).
+        let uri = if uri.starts_with("file://") {
+            uri.clone()
+        } else {
+            scanner::path_to_uri(&path)
+        };
         let is_xml = path.ends_with(".xml");
         let content = scanner::read_one(&path);
         let project_root = g
             .index
             .by_uri
-            .get(uri)
+            .get(&uri)
             .map(|&i| g.index.files[i].project_root.clone())
             .unwrap_or_else(|| {
                 g.index
@@ -316,7 +323,7 @@ fn do_update(uris: &[String]) -> BuildResult {
         let parsed = parse_candidate(&c, &mut failed_delta);
         // Only count a NEW failure when the file existed before (avoid double
         // counting on repeated failed saves).
-        if g.index.by_uri.contains_key(uri) && failed_delta > prev_failed {
+        if g.index.by_uri.contains_key(&uri) && failed_delta > prev_failed {
             // keep the delta
         } else {
             failed_delta = prev_failed;

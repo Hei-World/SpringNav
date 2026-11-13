@@ -174,6 +174,20 @@ function has(out, rel) {
     return `-> ${out.length}`;
   });
 
+  check('D-04b down: ServiceImpl 方法声明名 -> 接口（不进 Mapper）', () => {
+    const out = resolveDir(P.impl, 'selectUserList(SysUser user)', 'down', 5);
+    if (!has(out, P.svc)) throw new Error('no interface: ' + JSON.stringify(out.slice(0, 4)));
+    if (has(out, P.mapper)) throw new Error('unexpected mapper target: ' + JSON.stringify(out.slice(0, 4)));
+    return 'ok';
+  });
+
+  check('D-04c 无方向: ServiceImpl 方法声明名 -> 接口', () => {
+    const out = resolve(P.impl, 'selectUserList(SysUser user)', 5);
+    if (!has(out, P.svc)) throw new Error('no interface: ' + JSON.stringify(out.slice(0, 4)));
+    if (has(out, P.mapper)) throw new Error('unexpected mapper target: ' + JSON.stringify(out.slice(0, 4)));
+    return 'ok';
+  });
+
   check('D-05 down: Mapper -> XML; up: XML -> Mapper', () => {
     const down = resolveDir(P.mapper, 'selectUserList(SysUser sysUser)', 'down');
     const up = resolveDir(P.xml, '<select id="selectUserList"', 'up');

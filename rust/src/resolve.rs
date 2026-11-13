@@ -73,6 +73,20 @@ fn span_loc(index: &Index, uri: &str, line: u32, character: u32) -> Option<Loc> 
         .map(|s| s.loc.clone())
 }
 
+/// True when `loc` is the declaration site of a method in a ServiceImpl file.
+///
+/// Clicking such a declaration must NOT follow the call chain down into the
+/// Mapper (the calls in the method body carry their own anchors). Its
+/// relationship counterpart is the interface method it implements — up.
+fn is_impl_method_decl(index: &Index, loc: &Loc) -> bool {
+    match index.by_uri.get(&loc.uri) {
+        Some(&fi) if index.files[fi].role == Role::ServiceImpl => {
+            index.files[fi].methods.iter().any(|md| md.loc == *loc)
+        }
+        _ => false,
+    }
+}
+
 /// Fallback resolution from the current line text, used only when the cursor
 /// misses every stored span (e.g. a freshly edited line).
 fn fallback_targets(
@@ -120,7 +134,14 @@ fn fallback_targets(
     if !word.is_empty() {
         if let Some(mis) = index.method_index.get(&(fi, word.clone())) {
             for &mi in mis {
-                out.extend(targets_for(index, &index.files[fi].methods[mi].loc));
+                let dl = &index.files[fi].methods[mi].loc;
+                if is_impl_method_decl(index, dl) {
+                    if let Some(v) = index.up.get(dl) {
+                        out.extend(v.iter().cloned());
+                    }
+                } else {
+                    out.extend(targets_for(index, dl));
+                }
             }
         }
         for f in &index.files[fi].fields {
@@ -143,7 +164,11 @@ pub fn resolve_definition(
 ) -> Vec<Loc> {
     let mut out = Vec::new();
     if let Some(loc) = span_loc(index, uri, line, character) {
-        out = targets_for(index, &loc);
+        out = if is_impl_method_decl(index, &loc) {
+            index.up.get(&loc).cloned().unwrap_or_default()
+        } else {
+            targets_for(index, &loc)
+        };
     }
     if out.is_empty() {
         out = fallback_targets(index, cfg, uri, character, snippet);
@@ -184,12 +209,21 @@ pub fn resolve_directional(
                 }
             }
             "down" => {
-                if let Some(v) = index.down.get(&loc) {
-                    out.extend(v.iter().cloned());
-                }
-                if out.is_empty() && fallback {
+                if is_impl_method_decl(index, &loc) {
+                    // ServiceImpl method declaration: jump to the interface
+                    // method it implements (the body's calls are anchored at
+                    // their own call sites, not at the declaration).
                     if let Some(v) = index.up.get(&loc) {
                         out.extend(v.iter().cloned());
+                    }
+                } else {
+                    if let Some(v) = index.down.get(&loc) {
+                        out.extend(v.iter().cloned());
+                    }
+                    if out.is_empty() && fallback {
+                        if let Some(v) = index.up.get(&loc) {
+                            out.extend(v.iter().cloned());
+                        }
                     }
                 }
             }
