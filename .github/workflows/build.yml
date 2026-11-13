@@ -5,9 +5,36 @@ on:
   push:
     tags: ['v*']
   pull_request:
-    paths: ['rust/**', '.github/workflows/build.yml']
+    paths: ['rust/**', 'scripts/**', 'test/**', 'package.json', '.github/workflows/**']
 
 jobs:
+  # Fast gate: Rust unit tests + clippy + JS smoke/harness regression.
+  test:
+    name: test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Clippy (no warnings)
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: rust
+      - name: Rust unit tests
+        run: cargo test
+        working-directory: rust
+      - name: Build native module
+        run: npm run build:native
+      - name: JS smoke tests
+        run: node scripts/smoke.js
+      - name: Clone RuoYi-Vue fixture
+        run: git clone --depth 1 https://github.com/yangzongzhuan/RuoYi-Vue.git /tmp/RuoYi-Vue
+      - name: RuoYi end-to-end harness
+        run: node test/harness.js /tmp/RuoYi-Vue
+
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

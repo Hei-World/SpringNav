@@ -1,0 +1,11 @@
+{
+  "extension.description": "Lightweight SpringBoot code navigation for VS Code, powered by a Rust/napi-rs native index.",
+  "command.searchByPath": "SpringNav: Search by URL path",
+  "command.reindex": "SpringNav: Reload Index",
+  "command.reindexFolder": "SpringNav: Rebuild This Project's Index",
+  "command.goToImplementation": "Go to Java Implementation",
+  "command.goToReference": "Go to Java Reference",
+  "config.title": "SpringNav",
+  "config.defaultDirection.description": "Default direction for Ctrl/Cmd+Click (Go to Definition). down = Controller -> Service -> Impl -> Mapper -> XML, getXX -> field; up = reverse, one level at a time; both = both directions.",
+  "config.fallbackOnEmpty.description": "When the requested direction has no match, automatically fall back to the opposite direction for one level."
+}

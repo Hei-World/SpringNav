@@ -11,7 +11,7 @@ mod scanner;
 use napi::bindgen_prelude::*;
 use napi::{Env, Result, Task};
 use napi_derive::napi;
-use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
@@ -58,6 +58,10 @@ pub struct BuildResult {
     pub modules: u32,
     pub methods: u32,
     pub edges: u32,
+    /// Files skipped for exceeding the size limit.
+    pub skipped: u32,
+    /// Relevant source files that failed to parse.
+    pub failed: u32,
 }
 
 static STATE: OnceLock<RwLock<index::State>> = OnceLock::new();
@@ -74,10 +78,35 @@ fn build_result(st: &index::State) -> BuildResult {
         modules: i.module_count as u32,
         methods: i.files.iter().map(|f| f.methods.len() as u32).sum(),
         edges: i.edges.len() as u32,
+        skipped: i.skipped_large,
+        failed: i.parse_failed,
     }
 }
 
-/// F-01: re-validate that a workspace folder is (or contains) a Java project.
+/// Parse one candidate, counting a "relevant but failed" file as parse_failed.
+fn parse_candidate(c: &scanner::Candidate, failed: &mut u32) -> Option<model::FileModel> {
+    if c.is_xml {
+        let parsed = parser::parse_xml(c);
+        if parsed.is_none() && c.content.contains("<mapper") {
+            *failed += 1;
+        }
+        parsed
+    } else {
+        let name = Path::new(&c.path)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let relevant = parser::relevant_java(&c.path, &name, &c.content);
+        let parsed = parser::parse_java(c);
+        if relevant && parsed.is_none() {
+            *failed += 1;
+        }
+        parsed
+    }
+}
+
+/// F-01: a workspace folder is a Java project if any project root exists
+/// inside it (deep monorepo detection).
 #[napi]
 pub fn is_java_project(root: String) -> bool {
     scanner::is_java_project(&root)
@@ -95,28 +124,33 @@ pub struct BuildIndexTask {
 }
 
 impl Task for BuildIndexTask {
-    /// (files, projects, modules, methods, edges)
-    type Output = (u32, u32, u32, u32, u32);
+    /// (files, projects, modules, methods, edges, skipped, failed)
+    type Output = (u32, u32, u32, u32, u32, u32, u32);
     type JsValue = BuildResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
         let roots = self.roots.clone();
-        let cfg = config::Config::load_multi(&roots);
-        // Multi-root + multi-module: nested roots are dropped, each project is
-        // scanned once from its top folder, files are deduped by path.
-        let (cands, projects, workspace_roots) = scanner::collect_multi(&roots);
+        let scan = scanner::scan_workspace(&roots);
+        // Config comes from the ACTUAL project roots, so a config placed in a
+        // sub-project's `.idea` takes effect (not fixed to the workspace root).
+        let cfg = config::Config::load_multi(&scan.project_roots);
         let mut files = Vec::new();
-        for c in cands {
-            let parsed = if c.is_xml {
-                parser::parse_xml(&c)
-            } else {
-                parser::parse_java(&c)
-            };
-            if let Some(m) = parsed {
+        let mut failed = 0u32;
+        for c in &scan.candidates {
+            if let Some(m) = parse_candidate(c, &mut failed) {
                 files.push(m);
             }
         }
-        let mut st = index::build_index_from_files(files, &cfg, workspace_roots, projects.len());
+        let project_count = scan.project_roots.len();
+        let mut st = index::build_index_from_files(
+            files,
+            &cfg,
+            scan.workspace_roots,
+            scan.project_roots,
+            project_count,
+            scan.skipped_large,
+            failed,
+        );
         st.gen = self.gen;
         let out = (
             st.index.files.len() as u32,
@@ -128,6 +162,8 @@ impl Task for BuildIndexTask {
                 .map(|f| f.methods.len() as u32)
                 .sum::<u32>(),
             st.index.edges.len() as u32,
+            scan.skipped_large,
+            failed,
         );
         if let Ok(mut g) = state().write() {
             if st.gen >= g.gen {
@@ -144,6 +180,8 @@ impl Task for BuildIndexTask {
             modules: out.2,
             methods: out.3,
             edges: out.4,
+            skipped: out.5,
+            failed: out.6,
         })
     }
 }
@@ -237,67 +275,62 @@ pub fn search_by_path(path: String) -> Vec<Location> {
         .collect()
 }
 
-/// Incremental update: re-parse only the given files, then recompute the
-/// derived index in memory (no disk re-scan, no other files re-read).
+/// Incremental update: re-parse only the given files, then apply a true
+/// incremental index update (only changed files + invalidated edges).
 fn do_update(uris: &[String]) -> BuildResult {
     let mut g = match state().write() {
         Ok(v) => v,
         Err(_) => return BuildResult::default(),
     };
-    let roots = g.index.roots.clone();
-    let project_count = g.index.project_count;
     let cfg = g.config.clone();
-    let mut files = std::mem::take(&mut g.index.files);
-
-    let mut pos: HashMap<String, usize> = HashMap::new();
-    for (i, f) in files.iter().enumerate() {
-        pos.insert(f.uri.clone(), i);
-    }
-    let mut removed: Vec<usize> = Vec::new();
+    let mut failed_delta = 0u32;
+    let mut changes: Vec<(String, Option<model::FileModel>)> = Vec::new();
+    // Inherit the project root from the existing model (or fall back to the
+    // workspace root) so scoped config keeps working after a save.
     for uri in uris {
-        let existing = pos.get(uri).copied();
-        let path = existing
-            .map(|i| files[i].path.clone())
-            .unwrap_or_else(|| scanner::uri_to_path(uri));
+        let path = scanner::uri_to_path(uri);
         let is_xml = path.ends_with(".xml");
         let content = scanner::read_one(&path);
+        let project_root = g
+            .index
+            .by_uri
+            .get(uri)
+            .map(|&i| g.index.files[i].project_root.clone())
+            .unwrap_or_else(|| {
+                g.index
+                    .project_roots
+                    .iter()
+                    .filter(|r| path.starts_with(&format!("{}/", r)))
+                    .max_by_key(|r| r.len())
+                    .cloned()
+                    .unwrap_or_else(|| g.index.roots.first().cloned().unwrap_or_default())
+            });
         let c = scanner::Candidate {
             path,
             uri: uri.clone(),
             content,
             is_xml,
+            project_root,
         };
-        let parsed = if c.is_xml {
-            parser::parse_xml(&c)
+        let prev_failed = failed_delta;
+        let parsed = parse_candidate(&c, &mut failed_delta);
+        // Only count a NEW failure when the file existed before (avoid double
+        // counting on repeated failed saves).
+        if g.index.by_uri.contains_key(uri) && failed_delta > prev_failed {
+            // keep the delta
         } else {
-            parser::parse_java(&c)
-        };
-        match (existing, parsed) {
-            (Some(i), Some(m)) => {
-                if i < files.len() {
-                    files[i] = m;
-                }
-            }
-            (Some(i), None) => removed.push(i),
-            (None, Some(m)) => {
-                pos.insert(uri.clone(), files.len());
-                files.push(m);
-            }
-            (None, None) => {}
+            failed_delta = prev_failed;
         }
+        changes.push((uri.clone(), parsed));
     }
-    removed.sort_unstable();
-    removed.dedup();
-    for i in removed.into_iter().rev() {
-        files.remove(i);
-    }
-
+    index::apply_changes(&mut g, changes, &cfg);
+    g.index.parse_failed = g
+        .index
+        .parse_failed
+        .saturating_add(failed_delta);
     let gen = GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    let mut st = index::build_index_from_files(files, &cfg, roots, project_count);
-    st.gen = gen;
-    let res = build_result(&st);
-    *g = st;
-    res
+    g.gen = gen;
+    build_result(&g)
 }
 
 /// Batch incremental update (one rebuild for N changed files).
@@ -312,19 +345,23 @@ pub fn update_file(uri: String) {
     let _ = do_update(&[uri]);
 }
 
-/// C-04: reload config and rebuild relationships from cached parse models.
+/// C-04: reload config from every project root and rebuild.
 #[napi]
 pub fn reload_config() -> BuildResult {
     let mut g = match state().write() {
         Ok(v) => v,
         Err(_) => return BuildResult::default(),
     };
-    let roots = g.index.roots.clone();
-    let project_count = g.index.project_count;
-    let cfg = config::Config::load_multi(&roots);
+    let cfg = config::Config::load_multi(&g.index.project_roots);
     let files = std::mem::take(&mut g.index.files);
+    let roots = g.index.roots.clone();
+    let project_roots = g.index.project_roots.clone();
+    let pc = g.index.project_count;
+    let skipped = g.index.skipped_large;
+    let failed = g.index.parse_failed;
     let gen = GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    let mut st = index::build_index_from_files(files, &cfg, roots, project_count);
+    let mut st =
+        index::build_index_from_files(files, &cfg, roots, project_roots, pc, skipped, failed);
     st.gen = gen;
     let res = build_result(&st);
     *g = st;
@@ -339,31 +376,32 @@ pub fn reindex_root(root: String) -> BuildResult {
         Ok(v) => v,
         Err(_) => return BuildResult::default(),
     };
-    let roots = g.index.roots.clone();
-    let project_count = g.index.project_count;
     let cfg = g.config.clone();
     let rn = scanner::normalize_path(&root);
-
     let mut files = std::mem::take(&mut g.index.files);
     files.retain(|f| {
         let p = f.path.replace('\\', "/");
         !(p == rn || p.starts_with(&format!("{}/", rn)))
     });
+    let mut skipped_delta = 0u32;
+    let mut failed_delta = 0u32;
     if scanner::is_java_project(&rn) {
-        for c in scanner::collect(&rn) {
-            let parsed = if c.is_xml {
-                parser::parse_xml(&c)
-            } else {
-                parser::parse_java(&c)
-            };
-            if let Some(m) = parsed {
+        let (cs, skipped) = scanner::collect_with_stats(&rn, &rn);
+        skipped_delta = skipped;
+        for c in cs {
+            if let Some(m) = parse_candidate(&c, &mut failed_delta) {
                 files.push(m);
             }
         }
     }
-
+    let roots = g.index.roots.clone();
+    let project_roots = g.index.project_roots.clone();
+    let pc = g.index.project_count;
+    let skipped = g.index.skipped_large.saturating_add(skipped_delta);
+    let failed = g.index.parse_failed.saturating_add(failed_delta);
     let gen = GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    let mut st = index::build_index_from_files(files, &cfg, roots, project_count);
+    let mut st =
+        index::build_index_from_files(files, &cfg, roots, project_roots, pc, skipped, failed);
     st.gen = gen;
     let res = build_result(&st);
     *g = st;
@@ -378,6 +416,27 @@ pub fn get_status() -> BuildResult {
         Err(_) => return BuildResult::default(),
     };
     build_result(&g)
+}
+
+/// Filesystem paths of the discovered Java project roots (for the Explorer
+/// context menu filter).
+#[napi]
+pub fn project_roots() -> Vec<String> {
+    let g = match state().read() {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    g.index.project_roots.clone()
+}
+
+/// Whether the index has been built at least once (empty-window hint).
+#[napi]
+pub fn is_ready() -> bool {
+    let g = match state().read() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    g.gen > 0
 }
 
 #[napi]
@@ -396,7 +455,7 @@ pub fn index_stats() -> String {
     let calls: usize = i.files.iter().map(|f| f.calls.len()).sum();
     let xml: usize = i.files.iter().map(|f| f.xml_stmts.len()).sum();
     format!(
-        "projects={} modules={} roots={} files={} java={} xml_stmts={} methods={} calls={} paths={} path_entries={} edges={} down={} up={} aliases={} spans={}",
+        "projects={} modules={} roots={} files={} java={} xml_stmts={} methods={} calls={} paths={} path_entries={} edges={} down={} up={} aliases={} spans={} skipped={} failed={} call_cache={} impls_cache={} xml_cache={} edge_contrib={}",
         i.project_count,
         i.module_count,
         i.roots.len(),
@@ -411,6 +470,12 @@ pub fn index_stats() -> String {
         i.down.len(),
         i.up.len(),
         i.aliases.len(),
-        i.spans.len()
+        i.spans.len(),
+        i.skipped_large,
+        i.parse_failed,
+        i.call_cache.len(),
+        i.impls_cache.len(),
+        i.xml_cache.len(),
+        i.edge_contrib.len(),
     )
 }

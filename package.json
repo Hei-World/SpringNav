@@ -1,7 +1,7 @@
 {
   "name": "spring-nav",
   "displayName": "SpringNav",
-  "description": "Lightweight SpringBoot code navigation for VS Code, powered by a Rust/napi-rs native index.",
+  "description": "%extension.description%",
   "version": "0.1.0",
   "publisher": "hei-world",
   "license": "MIT",
@@ -34,30 +34,30 @@
     "commands": [
       {
         "command": "springNav.searchByPath",
-        "title": "SpringNav: Search by URL path"
+        "title": "%command.searchByPath%"
       },
       {
         "command": "springNav.reindex",
-        "title": "SpringNav: 重新加载索引"
+        "title": "%command.reindex%"
       },
       {
         "command": "springNav.reindexFolder",
-        "title": "SpringNav: 重建此项目索引"
+        "title": "%command.reindexFolder%"
       },
       {
         "command": "springNav.goToImplementation",
-        "title": "转到Java实现"
+        "title": "%command.goToImplementation%"
       },
       {
         "command": "springNav.goToReference",
-        "title": "转到Java引用"
+        "title": "%command.goToReference%"
       }
     ],
     "menus": {
       "explorer/context": [
         {
           "command": "springNav.reindexFolder",
-          "when": "explorerResourceIsFolder",
+          "when": "explorerResourceIsFolder && resourcePath in springNav.projectFolders",
           "group": "springnav@1"
         }
       ],
@@ -88,7 +88,7 @@
       }
     ],
     "configuration": {
-      "title": "SpringNav",
+      "title": "%config.title%",
       "properties": {
         "springNav.defaultDirection": {
           "type": "string",
@@ -98,12 +98,12 @@
             "both"
           ],
           "default": "down",
-          "description": "Ctrl/Cmd+点击（Go to Definition）的默认方向。down = 控制器→接口→实现→Mapper→XML，getXX→字段；up = 逐级反向；both = 两个方向都返回。"
+          "description": "%config.defaultDirection.description%"
         },
         "springNav.fallbackOnEmpty": {
           "type": "boolean",
           "default": true,
-          "description": "指定方向没有匹配结果时，是否自动回退到相反方向一级。"
+          "description": "%config.fallbackOnEmpty.description%"
         }
       }
     }

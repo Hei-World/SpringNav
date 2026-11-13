@@ -100,8 +100,7 @@ fn matching_paren(s: &str, open: usize) -> Option<usize> {
     let b = s.as_bytes();
     let mut d = 1i32;
     let mut quote: Option<u8> = None;
-    for i in open + 1..b.len() {
-        let c = b[i];
+    for (i, &c) in b.iter().enumerate().skip(open + 1) {
         if let Some(q) = quote {
             if c == q {
                 quote = None;
@@ -206,6 +205,50 @@ fn find_top_level_eq(s: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// Byte length of a leading `@Annotation(...)` prefix (balanced parens).
+fn annotation_prefix_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'@') {
+        return None;
+    }
+    let mut i = 1usize;
+    while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.') {
+        i += 1;
+    }
+    if i == 1 {
+        return None;
+    }
+    let mut j = i;
+    while j < b.len() && b[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    if j < b.len() && b[j] == b'(' {
+        let mut d = 1i32;
+        let mut k = j + 1;
+        let mut quote: Option<u8> = None;
+        while k < b.len() {
+            let c = b[k];
+            if let Some(q) = quote {
+                if c == q {
+                    quote = None;
+                }
+            } else if c == b'"' || c == b'\'' {
+                quote = Some(c);
+            } else if c == b'(' {
+                d += 1;
+            } else if c == b')' {
+                d -= 1;
+                if d == 0 {
+                    return Some(k + 1);
+                }
+            }
+            k += 1;
+        }
+        return None;
+    }
+    Some(i)
 }
 
 fn parse_annotation(t: &str) -> Option<Annotation> {
@@ -323,8 +366,7 @@ fn count_args(line: &str, open: usize) -> usize {
     let mut commas = 0usize;
     let mut saw = false;
     let mut quote: Option<u8> = None;
-    for i in open + 1..b.len() {
-        let c = b[i];
+    for &c in b.iter().skip(open + 1) {
         if let Some(q) = quote {
             if c == q {
                 quote = None;
@@ -453,8 +495,8 @@ fn try_field_decl(line: &str, line_no: u32, uri: &str) -> Option<FieldDecl> {
         name: name.to_string(),
         type_simple,
         loc: Loc::new(uri, line_no, col(line, byte)),
-        is_static: words.iter().any(|w| *w == "static"),
-        is_final: words.iter().any(|w| *w == "final"),
+        is_static: words.contains(&"static"),
+        is_final: words.contains(&"final"),
         annotations: Vec::new(),
     })
 }
@@ -505,7 +547,7 @@ fn assign_owners(model: &mut FileModel) {
     }
 }
 
-fn relevant_java(path: &str, file_name: &str, content: &str) -> bool {
+pub fn relevant_java(path: &str, file_name: &str, content: &str) -> bool {
     let stem = file_name.trim_end_matches(".java");
     for suf in [
         "Controller",
@@ -564,12 +606,43 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
     }
 
     let lines: Vec<&str> = c.content.lines().collect();
-    let mut model = FileModel::new(c.uri.clone(), c.path.clone(), FileKind::Java);
+    let mut model = FileModel::new(
+        c.uri.clone(),
+        c.path.clone(),
+        FileKind::Java,
+        c.project_root.clone(),
+    );
     let mut pending: Vec<Annotation> = Vec::new();
     let mut i = 0usize;
 
     while i < lines.len() {
-        let line = lines[i].trim_end_matches('\r');
+        let raw_line = lines[i].trim_end_matches('\r');
+        // Strip any leading annotation(s) even when a declaration follows on the
+        // SAME line. Blank them with equal-length spaces so all byte offsets
+        // (and therefore VS Code columns) stay identical to the original line.
+        let mut owned_line = raw_line.to_string();
+        loop {
+            let trimmed = owned_line.trim_start();
+            if !trimmed.starts_with('@') {
+                break;
+            }
+            let leading = owned_line.len() - trimmed.len();
+            match annotation_prefix_len(trimmed) {
+                Some(n) => {
+                    if let Some(a) = parse_annotation(&trimmed[..n]) {
+                        pending.push(a);
+                    }
+                    let end = leading + n;
+                    let blanks = " ".repeat(end);
+                    owned_line = format!("{}{}", blanks, &owned_line[end..]);
+                    if owned_line.trim().is_empty() {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+        let line = owned_line.as_str();
         let t = line.trim();
 
         if t.is_empty()
@@ -587,13 +660,6 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             continue;
         }
         if t.starts_with("import ") {
-            i += 1;
-            continue;
-        }
-        if t.starts_with('@') {
-            if let Some(a) = parse_annotation(t) {
-                pending.push(a);
-            }
             i += 1;
             continue;
         }
@@ -672,7 +738,12 @@ pub fn parse_xml(c: &Candidate) -> Option<FileModel> {
     if !c.content.contains("<mapper") {
         return None;
     }
-    let mut model = FileModel::new(c.uri.clone(), c.path.clone(), FileKind::Xml);
+    let mut model = FileModel::new(
+        c.uri.clone(),
+        c.path.clone(),
+        FileKind::Xml,
+        c.project_root.clone(),
+    );
 
     if let Some(caps) = RE_MAPPER.captures(&c.content) {
         model.xml_namespace = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
@@ -728,4 +799,67 @@ pub fn parse_xml(c: &Candidate) -> Option<FileModel> {
         return None;
     }
     Some(model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cand(content: &str) -> Candidate {
+        Candidate {
+            path: "/p/src/main/java/x/Foo.java".to_string(),
+            uri: "file:///p/src/main/java/x/Foo.java".to_string(),
+            content: content.to_string(),
+            is_xml: false,
+            project_root: "/p".to_string(),
+        }
+    }
+
+    #[test]
+    fn strip_simple_types() {
+        assert_eq!(strip_to_simple("List<String>"), "List");
+        assert_eq!(strip_to_simple("String[]"), "String");
+        assert_eq!(strip_to_simple("java.lang.Long"), "Long");
+        assert_eq!(strip_to_simple("Map<String, Object>"), "Map");
+    }
+
+    #[test]
+    fn annotation_prefix_len_balanced() {
+        assert!(annotation_prefix_len("@RestController rest").is_some());
+        assert!(annotation_prefix_len("@GetMapping(\"/x\") public void a() {}").is_some());
+        assert!(annotation_prefix_len("@RequestMapping(value = {\"/\", \"/{id}\"}) public void a(){}").is_some());
+        assert_eq!(annotation_prefix_len("public class X"), None);
+    }
+
+    #[test]
+    fn single_line_annotation_with_class_is_parsed() {
+        let m = parse_java(&cand(
+            "package x;\n@RestController public class OneLineController {\n    @GetMapping(\"/one\")\n    public void one() {}\n}\n",
+        ))
+        .expect("should parse");
+        assert_eq!(m.class_name, "OneLineController");
+        assert_eq!(m.methods.len(), 1);
+        assert_eq!(m.methods[0].paths, vec!["/one"]);
+        // Column must be correct on the masked line (name follows the space).
+        assert!(m.class_loc.character > 0);
+    }
+
+    #[test]
+    fn crlf_and_inline_comment_do_not_break_offsets() {
+        let c = cand("package x;\r\n@RestController\r\npublic class C {\r\n    public void go() {}\r\n}\r\n");
+        let m = parse_java(&c).unwrap();
+        assert_eq!(m.class_name, "C");
+        assert_eq!(m.methods.len(), 1);
+    }
+
+    #[test]
+    fn lombok_field_metadata() {
+        let m = parse_java(&cand(
+            "package x;\n@Data\npublic class D {\n    private static final long serialVersionUID = 1L;\n    private final String code = \"x\";\n    private String name;\n}\n",
+        ))
+        .unwrap();
+        assert_eq!(m.fields.len(), 3);
+        assert!(m.fields.iter().any(|f| f.is_static && f.is_final));
+        assert!(m.fields.iter().any(|f| f.is_final && !f.is_static));
+    }
 }

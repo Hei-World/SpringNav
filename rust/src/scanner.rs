@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,54 +17,85 @@ pub const SKIP_DIRS: &[&str] = &[
     "node_modules",
 ];
 
-const MARKERS: &[&str] = &["pom.xml", "build.gradle", "build.gradle.kts"];
-
-/// F-01: a workspace counts as a Java project only if a build marker exists.
-/// `workspaceContains:**/pom.xml` may match a nested module, so look a few
-/// levels deep (bounded, cheap).
-pub fn is_java_project(root: &str) -> bool {
-    fn walk(dir: &Path, depth: u32) -> bool {
-        if depth > 3 {
-            return false;
-        }
-        for m in MARKERS {
-            if dir.join(m).is_file() {
-                return true;
-            }
-        }
-        if let Ok(rd) = fs::read_dir(dir) {
-            for e in rd.flatten() {
-                let p = e.path();
-                if !p.is_dir() {
-                    continue;
-                }
-                let n = e.file_name().to_string_lossy().into_owned();
-                if SKIP_DIRS.contains(&n.as_str()) {
-                    continue;
-                }
-                if walk(&p, depth + 1) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-    walk(Path::new(root), 0)
-}
+const MARKERS: &[&str] = &["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"];
+/// Maximum depth when discovering project roots inside a workspace folder.
+const DISCOVER_DEPTH: u32 = 8;
+/// Maximum depth when enumerating source files.
+const SCAN_DEPTH: u32 = 24;
+/// Files larger than this are skipped (with a counter, surfaced in the UI).
+const MAX_FILE_BYTES: u64 = 1024 * 1024;
 
 pub struct Candidate {
     pub path: String,
     pub uri: String,
     pub content: String,
     pub is_xml: bool,
+    pub project_root: String,
 }
 
-/// Enumerate candidate source files ourselves (no workspace.findFiles).
-pub fn collect(root: &str) -> Vec<Candidate> {
-    let mut out = Vec::new();
+pub struct ScanResult {
+    pub candidates: Vec<Candidate>,
+    /// Actual Java project roots discovered (a multi-module project = 1).
+    pub project_roots: Vec<String>,
+    /// Deduped workspace folders (used for module naming).
+    pub workspace_roots: Vec<String>,
+    /// Number of files skipped because they exceeded MAX_FILE_BYTES.
+    pub skipped_large: u32,
+}
+
+fn has_marker(dir: &Path) -> bool {
+    MARKERS.iter().any(|m| dir.join(m).is_file())
+}
+
+/// Discover Java project roots inside a folder, top-down. When a directory has
+/// a build marker it is recorded as ONE project and its subdirectories are not
+/// searched for further project roots (so sub-modules of a multi-module project
+/// are not mistaken for independent projects). Files are still scanned from the
+/// whole folder tree afterwards.
+pub fn discover_projects(root: &str) -> Vec<String> {
+    let mut found = Vec::new();
     let mut stack: Vec<(PathBuf, u32)> = vec![(PathBuf::from(root), 0)];
     while let Some((dir, depth)) = stack.pop() {
-        if depth > 24 {
+        if depth > DISCOVER_DEPTH {
+            continue;
+        }
+        if has_marker(&dir) {
+            found.push(dir.to_string_lossy().into_owned());
+            continue; // prune: sub-modules belong to this project
+        }
+        let rd = match fs::read_dir(&dir) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let n = e.file_name().to_string_lossy().into_owned();
+            if SKIP_DIRS.contains(&n.as_str()) {
+                continue;
+            }
+            stack.push((p, depth + 1));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// F-01: a workspace counts as a Java project if any project root exists
+/// inside it (深度可到 DISCOVER_DEPTH，monorepo 深层项目也能识别).
+pub fn is_java_project(root: &str) -> bool {
+    !discover_projects(root).is_empty()
+}
+
+/// Enumerate candidate source files for one project root.
+pub fn collect_with_stats(root: &str, project_root: &str) -> (Vec<Candidate>, u32) {
+    let mut out = Vec::new();
+    let mut skipped = 0u32;
+    let mut stack: Vec<(PathBuf, u32)> = vec![(PathBuf::from(root), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > SCAN_DEPTH {
             continue;
         }
         let rd = match fs::read_dir(&dir) {
@@ -88,7 +120,8 @@ pub fn collect(root: &str) -> Vec<Candidate> {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            if meta.len() > 1024 * 1024 {
+            if meta.len() > MAX_FILE_BYTES {
+                skipped += 1;
                 continue;
             }
             let bytes = match fs::read(&p) {
@@ -101,16 +134,16 @@ pub fn collect(root: &str) -> Vec<Candidate> {
                 path: path_str,
                 content: String::from_utf8_lossy(&bytes).into_owned(),
                 is_xml,
+                project_root: project_root.to_string(),
             });
         }
     }
-    out
+    (out, skipped)
 }
 
-/// Collect across multiple workspace folders: drop nested roots, index each
-/// Java project once, dedupe files by path. A multi-module project is scanned
-/// from its top root once (sub-module pom.xml files are not separate projects).
-pub fn collect_multi(roots_in: &[String]) -> (Vec<Candidate>, Vec<String>, Vec<String>) {
+/// Scan all workspace folders: dedupe nested roots, discover project roots,
+/// scan each project once, dedupe files by path.
+pub fn scan_workspace(roots_in: &[String]) -> ScanResult {
     let mut roots: Vec<String> = Vec::new();
     for r in roots_in {
         let nr = normalize_path(r);
@@ -124,21 +157,28 @@ pub fn collect_multi(roots_in: &[String]) -> (Vec<Candidate>, Vec<String>, Vec<S
         roots.push(nr);
     }
 
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    let mut projects = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut candidates = Vec::new();
+    let mut project_roots = Vec::new();
+    let mut skipped_large = 0u32;
     for r in &roots {
-        if !is_java_project(r) {
-            continue;
-        }
-        projects.push(r.clone());
-        for c in collect(r) {
-            if seen.insert(c.path.clone()) {
-                out.push(c);
+        for pr in discover_projects(r) {
+            let (cs, skipped) = collect_with_stats(&pr, &pr);
+            skipped_large += skipped;
+            for c in cs {
+                if seen.insert(c.path.clone()) {
+                    candidates.push(c);
+                }
             }
+            project_roots.push(pr);
         }
     }
-    (out, projects, roots)
+    ScanResult {
+        candidates,
+        project_roots,
+        workspace_roots: roots,
+        skipped_large,
+    }
 }
 
 pub fn normalize_path(p: &str) -> String {
@@ -208,5 +248,52 @@ fn hex(b: u8) -> Option<u8> {
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uri_roundtrip() {
+        for p in [
+            "/tmp/simple/A.java",
+            "/tmp/dir with space/My Controller.java",
+            "/tmp/目录/文件.java",
+        ] {
+            assert_eq!(uri_to_path(&path_to_uri(p)), p);
+        }
+    }
+
+    #[test]
+    fn discovers_deep_and_prunes_modules() {
+        let base = std::env::temp_dir().join(format!("sn-discover-{}", std::process::id()));
+        let deep = base.join("l1/l2/l3/l4/proj");
+        fs::create_dir_all(deep.join("src/main/java")).unwrap();
+        fs::write(deep.join("pom.xml"), "<project/>").unwrap();
+        fs::write(deep.join("src/main/java/A.java"), "class A {}").unwrap();
+        // A multi-module project: prune at the outer marker, sub-modules not listed separately.
+        let multi = base.join("multi");
+        fs::create_dir_all(multi.join("mod-a")).unwrap();
+        fs::write(multi.join("pom.xml"), "<project/>").unwrap();
+        fs::write(multi.join("mod-a/pom.xml"), "<project/>").unwrap();
+        let found = discover_projects(&multi.to_string_lossy());
+        assert_eq!(found.len(), 1, "multi-module should be 1 project");
+        let found_deep = discover_projects(&base.to_string_lossy());
+        assert!(found_deep.iter().any(|p| p.ends_with("proj")), "deep project must be found");
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn skips_large_files_with_counter() {
+        let base = std::env::temp_dir().join(format!("sn-skip-{}", std::process::id()));
+        fs::create_dir_all(&base).unwrap();
+        let big = base.join("Big.java");
+        fs::write(&big, vec![b'x'; 1024 * 1024 + 10]).unwrap();
+        let (cs, skipped) = collect_with_stats(&base.to_string_lossy(), &base.to_string_lossy());
+        assert_eq!(cs.len(), 0);
+        assert_eq!(skipped, 1);
+        fs::remove_dir_all(base).ok();
     }
 }

@@ -571,7 +571,7 @@ function check(name, fn) {
     const one = await addon.buildIndex([parent]);
     const two = await addon.buildIndex([parent, path.join(parent, 'proj-a')]);
     if (one.files !== two.files) throw new Error(`files ${one.files} vs ${two.files}`);
-    if (two.projects !== 1) throw new Error('projects=' + two.projects);
+    if (two.projects !== 2) throw new Error('projects=' + two.projects);
     return `files=${two.files} projects=${two.projects}`;
   });
 

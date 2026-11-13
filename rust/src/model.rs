@@ -1,17 +1,21 @@
 // Compact metadata-only model. No file contents, no AST, no source text are kept.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum Role {
     Controller,
     Service,
     ServiceImpl,
     Mapper,
     Entity,
+    #[default]
     Other,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum FileKind {
+    #[default]
     Java,
     Xml,
 }
@@ -63,6 +67,8 @@ pub struct PathEntry {
     pub method: String,
     pub module: String,
     pub loc: Loc,
+    /// Index of the owning file in Index.files (for incremental removal).
+    pub owner: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -109,6 +115,8 @@ pub struct FileModel {
     pub uri: String,
     pub path: String,
     pub kind: FileKind,
+    /// Project root this file belongs to (drives per-project config).
+    pub project_root: String,
     // Java class metadata
     pub package: String,
     pub class_name: String,
@@ -131,24 +139,15 @@ pub struct FileModel {
     pub namespace_span: Option<(u32, u32)>,
 }
 
-impl Default for FileKind {
-    fn default() -> Self {
-        FileKind::Java
-    }
-}
 
-impl Default for Role {
-    fn default() -> Self {
-        Role::Other
-    }
-}
 
 impl FileModel {
-    pub fn new(uri: String, path: String, kind: FileKind) -> Self {
+    pub fn new(uri: String, path: String, kind: FileKind, project_root: String) -> Self {
         FileModel {
             uri,
             path,
             kind,
+            project_root,
             ..Default::default()
         }
     }
@@ -159,4 +158,13 @@ pub struct Span {
     pub start: u32,
     pub end: u32,
     pub loc: Loc,
+}
+
+/// A per-file edge contribution: kind 0 = undirected(a,b),
+/// 1 = directed(a=upper, b=lower), 2 = alias(a=from, b=to).
+#[derive(Clone, Debug)]
+pub struct Triple {
+    pub a: Loc,
+    pub b: Loc,
+    pub kind: u8,
 }

@@ -13,6 +13,12 @@ pub struct Config {
     pub type_roles: HashMap<String, String>,
     /// interface role -> implementation filename glob patterns
     pub impl_patterns: HashMap<String, Vec<String>>,
+    /// Per-project overrides, keyed by project root. These take precedence over
+    /// the merged/global maps so a config in one project never leaks into
+    /// another (multi-root workspaces).
+    pub project_aliases: HashMap<String, HashMap<String, String>>,
+    pub project_roles: HashMap<String, HashMap<String, String>>,
+    pub project_impl_patterns: HashMap<String, HashMap<String, Vec<String>>>,
 }
 
 pub fn parse_role(s: &str) -> Option<Role> {
@@ -45,37 +51,38 @@ impl Config {
         Config::default()
     }
 
-    /// Merge configs from every workspace folder (earlier roots win).
+    /// Load config from every ACTUAL project root. Rules stay strictly scoped
+    /// to their project, so one project's config never affects another.
     pub fn load_multi(roots: &[String]) -> Config {
         let mut out = Config::default();
         for r in roots {
             let c = Config::load(r);
-            for (k, v) in c.aliases {
-                out.aliases.entry(k).or_insert(v);
-            }
-            for (k, v) in c.type_roles {
-                out.type_roles.entry(k).or_insert(v);
-            }
-            for (k, v) in c.impl_patterns {
-                out.impl_patterns.entry(k).or_insert(v);
-            }
+            out.project_aliases.insert(r.clone(), c.aliases);
+            out.project_roles.insert(r.clone(), c.type_roles);
+            out.project_impl_patterns.insert(r.clone(), c.impl_patterns);
         }
         out
     }
 
-    pub fn role_override(&self, simple: &str, fqcn: &str) -> Option<Role> {
-        self.type_roles
-            .get(fqcn)
-            .or_else(|| self.type_roles.get(simple))
+    /// Strictly scoped lookup (no cross-project leakage).
+    pub fn alias_for(&self, project: &str, key: &str) -> Option<&str> {
+        self.project_aliases
+            .get(project)
+            .and_then(|m| m.get(key))
+            .map(|s| s.as_str())
+    }
+
+    pub fn role_override_for(&self, project: &str, simple: &str, fqcn: &str) -> Option<Role> {
+        self.project_roles
+            .get(project)
+            .and_then(|m| m.get(fqcn).or_else(|| m.get(simple)))
             .and_then(|v| parse_role(v))
     }
 
-    pub fn alias(&self, key: &str) -> Option<&str> {
-        self.aliases.get(key).map(|s| s.as_str())
-    }
-
-    pub fn impl_patterns_for(&self, role: &str) -> Option<&Vec<String>> {
-        self.impl_patterns.get(role)
+    pub fn impl_patterns_for_project(&self, project: &str, role: &str) -> Option<&Vec<String>> {
+        self.project_impl_patterns
+            .get(project)
+            .and_then(|m| m.get(role))
     }
 }
 
@@ -176,4 +183,42 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
         pi += 1;
     }
     pi == p.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn glob_matches() {
+        assert!(glob_match("*ServiceImpl", "SysUserServiceImpl"));
+        assert!(glob_match("ISys*Service", "ISysUserService"));
+        assert!(!glob_match("*ServiceImpl", "SysUserMapper"));
+    }
+
+    #[test]
+    fn role_parsing() {
+        assert_eq!(parse_role("controller"), Some(Role::Controller));
+        assert_eq!(parse_role("service_impl"), Some(Role::ServiceImpl));
+        assert_eq!(parse_role("nope"), None);
+    }
+
+    #[test]
+    fn project_scoped_config_is_isolated() {
+        let base = std::env::temp_dir().join(format!("sn-cfg-test-{}", std::process::id()));
+        let a = base.join("A");
+        let b = base.join("B");
+        fs::create_dir_all(a.join(".idea")).unwrap();
+        fs::create_dir_all(b.join(".idea")).unwrap();
+        fs::write(a.join(".idea/spring-nav.toml"), "[aliases]\n\"svc\" = \"AService\"\n").unwrap();
+        fs::write(b.join(".idea/spring-nav.toml"), "[aliases]\n\"svc\" = \"BService\"\n").unwrap();
+        let cfg = Config::load_multi(&[a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()]);
+        assert_eq!(cfg.alias_for(&a.to_string_lossy(), "svc"), Some("AService"));
+        assert_eq!(cfg.alias_for(&b.to_string_lossy(), "svc"), Some("BService"));
+        assert_eq!(cfg.alias_for("/some/other", "svc"), None);
+        let _: PathBuf = base;
+        fs::remove_dir_all(base).ok();
+    }
 }

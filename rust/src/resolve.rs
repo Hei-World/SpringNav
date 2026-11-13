@@ -157,6 +157,7 @@ pub fn resolve_definition(
 ///   "up" (reverse), or "both".
 /// - `fallback`: when the requested direction has no result, try the opposite
 ///   direction once ("向下没有匹配项回退向上跳一级" / "已到顶级则向下").
+#[allow(clippy::too_many_arguments)] // explicit query parameters from the TS shell
 pub fn resolve_directional(
     index: &Index,
     cfg: &Config,

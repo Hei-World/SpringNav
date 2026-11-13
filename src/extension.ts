@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { messages, language } from './i18n';
 
 // The TS shell is intentionally logic-free (P-05): it only activates, registers
 // providers/commands, passes parameters through and converts Rust locations
@@ -28,6 +29,8 @@ interface BuildResult {
   modules: number;
   methods: number;
   edges: number;
+  skipped: number;
+  failed: number;
 }
 
 interface SpringNavNative {
@@ -54,6 +57,8 @@ interface SpringNavNative {
   reindexRoot(root: string): BuildResult;
   reloadConfig(): BuildResult;
   getStatus(): BuildResult;
+  projectRoots(): string[];
+  isReady(): boolean;
   indexStats(): string;
   uriForPath(path: string): string;
 }
@@ -70,6 +75,8 @@ const JAVA_XML = [{ language: 'java' }, { language: 'xml' }];
 let statusBar: vscode.StatusBarItem | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
 let buildSeq = 0;
+let indexReady = false;
+let waitHintShown = false;
 
 function toLocations(locs: NativeLocation[]): vscode.Location[] {
   return locs.map(
@@ -131,8 +138,9 @@ function setIndexing(): void {
   if (!statusBar) {
     return;
   }
-  statusBar.text = '$(sync~spin) SpringNav: 索引中…';
-  statusBar.tooltip = 'SpringNav 正在构建索引';
+  const t = messages();
+  statusBar.text = t.indexing;
+  statusBar.tooltip = t.indexingTooltip;
   statusBar.show();
 }
 
@@ -140,19 +148,33 @@ function setReady(r: BuildResult): void {
   if (!statusBar) {
     return;
   }
-  statusBar.text = `$(database) SpringNav: ${r.files} 文件`;
-  statusBar.tooltip = new vscode.MarkdownString(
-    `**SpringNav 索引**\n\n- 项目：${r.projects}\n- 模块：${r.modules}\n- 文件：${r.files}\n- 方法：${r.methods}\n- 边：${r.edges}\n\n点击重新构建索引`
-  );
+  const t = messages();
+  statusBar.text = t.ready(r.files);
+  const tip = new vscode.MarkdownString(t.tooltip(r));
+  statusBar.tooltip = tip;
   statusBar.show();
+  // Expose project roots so the Explorer context menu only shows on project
+  // folders (P2 filter). Include both fsPath and URI forms because different
+  // VS Code builds populate `resourcePath` differently.
+  const roots = native.projectRoots();
+  const folderKeys = roots.flatMap((r) => [r, vscode.Uri.file(r).toString()]);
+  void vscode.commands.executeCommand(
+    'setContext',
+    'springNav.projectFolders',
+    folderKeys
+  );
+  if (r.skipped > 0 || r.failed > 0) {
+    outputChannel?.appendLine(t.skippedAndFailed(r.skipped, r.failed));
+  }
 }
 
 function setError(): void {
   if (!statusBar) {
     return;
   }
-  statusBar.text = '$(error) SpringNav: 索引失败';
-  statusBar.tooltip = 'SpringNav 索引失败，点击重试';
+  const t = messages();
+  statusBar.text = t.error;
+  statusBar.tooltip = t.errorTooltip;
   statusBar.show();
 }
 
@@ -163,28 +185,27 @@ async function runIndex(notify: boolean): Promise<void> {
     return;
   }
   const seq = ++buildSeq;
+  indexReady = false;
+  waitHintShown = false;
   setIndexing();
   try {
     const r = await native.buildIndex(roots);
     if (seq !== buildSeq) {
       return; // superseded by a newer rebuild
     }
+    indexReady = true;
     setReady(r);
-    outputChannel?.appendLine(
-      `SpringNav: indexed ${r.files} files, ${r.projects} projects, ${r.modules} modules, ${r.methods} methods, ${r.edges} edges`
-    );
+    const t = messages();
+    outputChannel?.appendLine(t.indexed(r));
     if (notify) {
-      vscode.window.setStatusBarMessage(
-        `SpringNav: 索引完成（${r.projects} 项目 / ${r.modules} 模块 / ${r.files} 文件）`,
-        4000
-      );
+      vscode.window.setStatusBarMessage(t.indexDone(r), 4000);
     }
   } catch (err) {
     if (seq !== buildSeq) {
       return;
     }
     setError();
-    vscode.window.showErrorMessage(`SpringNav: 索引失败 - ${String(err)}`);
+    vscode.window.showErrorMessage(messages().indexFailed(String(err)));
   }
 }
 
@@ -210,7 +231,7 @@ function resolveAt(direction: 'down' | 'up' | 'both'): vscode.Location[] {
 /** Single result: open directly. Multiple: peek list. None: normal hint. */
 async function reveal(locs: vscode.Location[], label: string): Promise<void> {
   if (locs.length === 0) {
-    vscode.window.showInformationMessage(`SpringNav: 未找到匹配的${label}`);
+    vscode.window.showInformationMessage(messages().notFound(label));
     return;
   }
   if (locs.length === 1) {
@@ -238,7 +259,7 @@ async function reveal(locs: vscode.Location[], label: string): Promise<void> {
     loc,
   }));
   const picked = await vscode.window.showQuickPick(picks, {
-    placeHolder: `SpringNav: 找到 ${locs.length} 个匹配位置`,
+    placeHolder: messages().peekPlaceholder(locs.length),
   });
   if (picked) {
     await vscode.window.showTextDocument(picked.loc.uri, {
@@ -283,7 +304,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // F-02: lazy, asynchronous build. Activation does NOT wait for it.
   void runIndex(false);
-  outputChannel?.appendLine('SpringNav: activation, indexing started');
+  outputChannel?.appendLine(messages().activation);
+  outputChannel?.appendLine(`SpringNav: language = ${language()}`);
 
   // Ctrl/Cmd+Click goes through Go to Definition -> this provider.
   context.subscriptions.push(
@@ -298,19 +320,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           defaultDirection(),
           fallbackOnEmpty()
         );
+        // Empty-window hint: while indexing, explain instead of a silent
+        // "No definition found". Shown at most once per indexing period.
+        if (locs.length === 0 && !indexReady && !waitHintShown) {
+          waitHintShown = true;
+          vscode.window.showInformationMessage(messages().indexingWait);
+        }
         // Returning Location[] lets VS Code show a peek list for multi-hits (M-01).
         return toLocations(locs);
       },
     })
   );
 
-  // Right-click menu: 转到Java实现 (down) / 转到Java引用 (up).
+  // Right-click menu: Go to Java Implementation (down) / Reference (up).
   context.subscriptions.push(
     vscode.commands.registerCommand('springNav.goToImplementation', async () => {
-      await reveal(resolveAt('down'), '实现');
+      await reveal(resolveAt('down'), messages().labelImplementation);
     }),
     vscode.commands.registerCommand('springNav.goToReference', async () => {
-      await reveal(resolveAt('up'), '引用');
+      await reveal(resolveAt('up'), messages().labelReference);
     })
   );
 
@@ -318,11 +346,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand('springNav.reindex', async () => {
       await runIndex(true);
-      outputChannel?.appendLine(`SpringNav: rebuilt — ${native.indexStats()}`);
+      outputChannel?.appendLine(messages().rebuilt(native.indexStats()));
     })
   );
 
-  // Explorer right-click on a folder: rebuild only that project.
+  // Explorer right-click on a project folder: rebuild only that project.
   context.subscriptions.push(
     vscode.commands.registerCommand('springNav.reindexFolder', async (uri?: vscode.Uri) => {
       if (!uri) {
@@ -330,9 +358,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       const target = findReindexRoot(uri.fsPath);
       if (!native.isJavaProject(target)) {
-        vscode.window.showWarningMessage(
-          'SpringNav: 该目录不是 Java 项目（未找到 pom.xml / build.gradle）'
-        );
+        vscode.window.showWarningMessage(messages().notJavaProject);
         return;
       }
       setIndexing();
@@ -340,13 +366,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         const r = native.reindexRoot(target);
         setReady(r);
         vscode.window.setStatusBarMessage(
-          `SpringNav: 已重建 ${path.basename(target)} 的索引（索引共 ${r.files} 文件 / ${r.modules} 模块）`,
+          messages().reindexed(path.basename(target), r.files, r.modules),
           3000
         );
-        outputChannel?.appendLine(`SpringNav: reindexed root ${target}`);
+        outputChannel?.appendLine(messages().reindexedLog(target));
       } catch (err) {
         setError();
-        outputChannel?.appendLine(`SpringNav: reindex root failed: ${String(err)}`);
+        outputChannel?.appendLine(messages().reindexFailed(String(err)));
       }
     })
   );
@@ -355,8 +381,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand('springNav.searchByPath', async () => {
       const qp = vscode.window.createQuickPick<PathItem>();
-      qp.title = 'SpringNav: 按接口路径搜索';
-      qp.placeholder = '输入路径片段开始检索，例如 /system/user/list';
+      qp.title = messages().searchTitle;
+      qp.placeholder = messages().searchPlaceholder;
       qp.matchOnDescription = false;
       qp.matchOnDetail = false;
       qp.onDidChangeValue((value) => {
@@ -408,10 +434,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         try {
           setIndexing();
           const r = native.updateFiles(uris);
+          indexReady = true;
           setReady(r);
         } catch (err) {
           setError();
-          outputChannel?.appendLine(`SpringNav: update failed: ${String(err)}`);
+          outputChannel?.appendLine(messages().updateFailed(String(err)));
         }
       }, 250);
     })
