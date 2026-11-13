@@ -45,6 +45,16 @@ function resolve(rel, needle, offset = 0, occurrence = 0) {
   return addon.resolveDefinition(uri, p.line, p.character, p.text);
 }
 
+function resolveDir(rel, needle, direction, offset = 0, occurrence = 0, fallback = true) {
+  const p = pos(rel, needle, offset, occurrence);
+  const uri = addon.uriForPath(path.join(root, rel));
+  return addon.resolveDirectional(uri, p.line, p.character, p.text, direction, fallback);
+}
+
+function hasLine(out, rel, line) {
+  return out.some((l) => l.uri.includes(rel) && l.line === line);
+}
+
 const results = [];
 function check(name, fn) {
   try {
@@ -138,6 +148,73 @@ function has(out, rel) {
       if (keys[i - 1] > keys[i]) throw new Error('not sorted');
     }
     return 'ok';
+  });
+
+  check('D-01 down: Controller call -> Service interface', () => {
+    const out = resolveDir(P.ctrl, 'selectUserList(user)', 'down', 0, 0);
+    if (!has(out, P.svc)) throw new Error('no service: ' + JSON.stringify(out.slice(0, 4)));
+    return `-> ${out.length}`;
+  });
+
+  check('D-02 down: Service interface -> Impl', () => {
+    const out = resolveDir(P.svc, 'selectUserList(SysUser user)', 'down');
+    if (!has(out, P.impl)) throw new Error('no impl: ' + JSON.stringify(out.slice(0, 4)));
+    return `-> ${out.length}`;
+  });
+
+  check('D-03 up: Service interface -> Controller', () => {
+    const out = resolveDir(P.svc, 'selectUserList(SysUser user)', 'up');
+    if (!has(out, P.ctrl)) throw new Error('no controller: ' + JSON.stringify(out.slice(0, 4)));
+    return `-> ${out.length}`;
+  });
+
+  check('D-04 down: ServiceImpl -> Mapper', () => {
+    const out = resolveDir(P.impl, 'selectUserList(user)', 'down', 0, 0);
+    if (!has(out, P.mapper)) throw new Error('no mapper: ' + JSON.stringify(out.slice(0, 4)));
+    return `-> ${out.length}`;
+  });
+
+  check('D-05 down: Mapper -> XML; up: XML -> Mapper', () => {
+    const down = resolveDir(P.mapper, 'selectUserList(SysUser sysUser)', 'down');
+    const up = resolveDir(P.xml, '<select id="selectUserList"', 'up');
+    if (!has(down, P.xml)) throw new Error('down: no xml');
+    if (!has(up, P.mapper)) throw new Error('up: no mapper');
+    return 'ok';
+  });
+
+  check('D-06 fallback: XML has no down -> falls back to up (Mapper)', () => {
+    const out = resolveDir(P.xml, '<select id="selectUserList"', 'down');
+    if (!has(out, P.mapper)) throw new Error('no mapper fallback: ' + JSON.stringify(out.slice(0, 4)));
+    return 'ok';
+  });
+
+  check('D-07 entity: getter down -> field; field up -> getter', () => {
+    const f = pos(P.entity, 'private Long userId;', 'private Long '.length);
+    const g = pos(P.entity, 'getUserId()');
+    const down = resolveDir(P.entity, 'getUserId()', 'down');
+    const up = resolveDir(P.entity, 'private Long userId;', 'up', 'private Long '.length);
+    if (!hasLine(down, P.entity, f.line)) throw new Error('getter down did not reach field line ' + f.line);
+    if (!hasLine(up, P.entity, g.line)) throw new Error('field up did not reach getter line ' + g.line);
+    return 'ok';
+  });
+
+  check('D-08 path hits carry file/verb/module', () => {
+    const hits = addon.searchPathHits('/system/user/list');
+    if (hits.length === 0) throw new Error('no hits');
+    const h = hits[0];
+    if (h.path !== '/system/user/list') throw new Error('bad path ' + h.path);
+    if (!h.file.includes('SysUserController.java')) throw new Error('bad file ' + h.file);
+    if (h.method !== 'GET') throw new Error('bad method ' + h.method);
+    if (!h.module.includes('ruoyi-admin')) throw new Error('bad module ' + h.module);
+    return `${h.path} ${h.file} [${h.method}] ${h.module}`;
+  });
+
+  check('D-09 multi-token real-time hits', () => {
+    const hits = addon.searchPathHits('system user list');
+    if (!hits.some((h) => h.path === '/system/user/list')) {
+      throw new Error('no multi-token hit: ' + JSON.stringify(hits.slice(0, 3)));
+    }
+    return `-> ${hits.length}`;
   });
 
   // C-02/C-03/C-04: an explicit alias overrides the inferred field type.

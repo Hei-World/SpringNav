@@ -40,6 +40,8 @@ impl Loc {
 pub struct Annotation {
     pub name: String,
     pub paths: Vec<String>,
+    /// Raw argument text, used to read `method = RequestMethod.GET`.
+    pub raw: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -49,6 +51,18 @@ pub struct MethodDecl {
     pub loc: Loc,
     /// Mapping paths declared directly on the method (@GetMapping etc.).
     pub paths: Vec<String>,
+    /// HTTP verbs inferred from mapping annotations (GET/POST/...).
+    pub http_methods: Vec<String>,
+}
+
+/// One entry of the interface-path index, carrying display metadata.
+#[derive(Clone, Debug, Default)]
+pub struct PathEntry {
+    pub path: String,
+    pub file: String,
+    pub method: String,
+    pub module: String,
+    pub loc: Loc,
 }
 
 #[derive(Clone, Debug, Default)]

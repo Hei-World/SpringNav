@@ -31,6 +31,19 @@ impl Location {
     }
 }
 
+/// A display-ready interface-path hit for the real-time search list.
+#[napi(object)]
+#[derive(Clone)]
+pub struct PathHit {
+    pub path: String,
+    pub file: String,
+    pub method: String,
+    pub module: String,
+    pub uri: String,
+    pub line: u32,
+    pub character: u32,
+}
+
 static STATE: OnceLock<RwLock<index::State>> = OnceLock::new();
 
 fn state() -> &'static RwLock<index::State> {
@@ -108,6 +121,56 @@ pub fn resolve_definition(
     resolve::resolve_definition(&g.index, &g.config, &uri, line, character, &context_snippet)
         .into_iter()
         .map(Location::from_loc)
+        .collect()
+}
+
+/// Directional resolution used by Ctrl/Cmd+Click (down) and F12 (up).
+#[napi]
+pub fn resolve_directional(
+    uri: String,
+    line: u32,
+    character: u32,
+    context_snippet: String,
+    direction: String,
+    fallback: bool,
+) -> Vec<Location> {
+    let g = match state().read() {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    resolve::resolve_directional(
+        &g.index,
+        &g.config,
+        &uri,
+        line,
+        character,
+        &context_snippet,
+        &direction,
+        fallback,
+    )
+    .into_iter()
+    .map(Location::from_loc)
+    .collect()
+}
+
+/// Real-time interface-path search: returns display entries, no filesystem paths.
+#[napi]
+pub fn search_path_hits(query: String) -> Vec<PathHit> {
+    let g = match state().read() {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    resolve::search_path_hits(&g.index, &query)
+        .into_iter()
+        .map(|e| PathHit {
+            path: e.path,
+            file: e.file,
+            method: e.method,
+            module: e.module,
+            uri: e.loc.uri,
+            line: e.loc.line,
+            character: e.loc.character,
+        })
         .collect()
 }
 
@@ -197,14 +260,17 @@ pub fn index_stats() -> String {
     let calls: usize = i.files.iter().map(|f| f.calls.len()).sum();
     let xml: usize = i.files.iter().map(|f| f.xml_stmts.len()).sum();
     format!(
-        "files={} java={} xml_stmts={} methods={} calls={} paths={} edges={} aliases={} spans={}",
+        "files={} java={} xml_stmts={} methods={} calls={} paths={} path_entries={} edges={} down={} up={} aliases={} spans={}",
         i.files.len(),
         java,
         xml,
         methods,
         calls,
         i.path_index.len(),
+        i.path_entries.len(),
         i.edges.len(),
+        i.down.len(),
+        i.up.len(),
         i.aliases.len(),
         i.spans.len()
     )

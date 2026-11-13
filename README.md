@@ -22,8 +22,8 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 - **不启动 JDT LS、不依赖 Red Hat Java、不用 tree-sitter、不用 WASM**（P-01/P-04/P-06）。
 - 解析器是 Rust 手写轻量解析器（逐行扫描 + 状态机 + 正则），**不构建完整 AST**。
 - 索引**只存元数据**（类名、方法名、参数类型、文件 URI、行号、注解路径、字段类型），不存文件内容、不存 AST（P-02）。典型项目内存占用几十 MB 以内。
-- 索引构建阶段把**所有跳转关系预计算成无向边**，并登记光标 span。查询时只做「`(uri,line)` 找 span → 命中符号 → 查邻接表 → 去重排序」，**纯内存查表，无磁盘 I/O、不重新解析文件**，Rust 侧微秒级（P-03）。
-- 双向跳转靠「边两端都登记」天然实现；多结果就是邻接表里的多个位置，TS 直接映射成 `Location[]`，VS Code 以 peek 列表展示（M-01）。
+- 索引构建阶段把**所有跳转关系预计算成有向边（`down` / `up`）**，并登记光标 span。查询时只做「`(uri,line)` 找 span → 命中符号 → 查方向表 → 去重排序」，**纯内存查表，无磁盘 I/O、不重新解析文件**，Rust 侧微秒级（P-03）。
+- **方向语义**：`down` = 控制器 → 接口方法 → 实现类 → Mapper → XML，以及 `getXX/setXX` → 实体字段；`up` = 逐级反向。多结果就是邻接表里的多个位置，TS 直接映射成 `Location[]`，VS Code 以 peek 列表展示（M-01）。
 - `buildIndex` 用 napi `AsyncTask` 在 libuv 线程池异步构建，**不阻塞扩展激活**；查询走 `RwLock` 读锁。
 
 ---
@@ -44,7 +44,7 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 | J-07 | `this::method` 方法引用跳转（单重载精准，多重载返回列表） |
 | J-08 | 重载处理：索引键含方法名 + 参数类型；命中多个返回列表 |
 | J-09 | 继承链查找：当前类找不到时沿 `extends`/`implements` 上溯 |
-| S-01 | `springNav.searchByPath` 命令：输入 `/v1/getInfo` 形式路径定位 Controller 方法 |
+| S-01 | `springNav.searchByPath`：实时搜索列表，输入即过滤；显示 `路径 + (文件名) + [HTTP方法] + 模块` |
 | S-02 | 路径索引：拼接类级 + 方法级 `@RequestMapping`/`@GetMapping` 等注解为完整 URL |
 | M-01 | 多结果返回 `Location[]`，VS Code peek 列表选择 |
 | M-02 | 结果去重 + 按文件路径与行号排序 |
@@ -55,10 +55,49 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 
 ### 用法
 
-- 打开一个 SpringBoot 工程（含 `pom.xml` 等），插件自动激活并异步建索引。
-- 把光标放在调用点或声明上，按 `F12` / `Ctrl+Click` 跳到另一端；命中多个时弹出 peek 列表。
-- 命令面板执行 `SpringNav: Search by URL path`，输入 `/system/user/list` 定位接口方法。
-- 输出通道 `SpringNav` 会打印索引统计（文件数、方法数、边数等）。
+打开一个 SpringBoot 工程（含 `pom.xml` 等），插件自动激活并异步建索引。输出通道 `SpringNav` 会打印索引统计。
+
+#### 方向跳转（向下 / 向上）
+
+**向下**：控制器 → 接口方法 → 实现类 → Mapper → XML；`getXX/setXX` → 实体字段。
+**向上**：上述链路逐级反向（XML → Mapper → 实现类 → 接口方法 → 控制器）。
+
+| 入口 | 行为 |
+| --- | --- |
+| `Ctrl` / `Cmd` + 鼠标左键点击（内置 Go to Definition） | **向下**；该方向无匹配时自动**回退向上**一级（可配置） |
+| `F12` | **向上**（覆盖了 VS Code 内置 F12 的 Go to Definition，仅 java/xml 生效） |
+| 右键菜单 **转到Java实现** | 向下，直接跳转（多结果弹 peek 列表） |
+| 右键菜单 **转到Java引用** | 向上，直接跳转（多结果弹 peek 列表） |
+
+> 默认不额外注册其它键盘快捷键，避免与系统/其它插件冲突。如果确实需要，可自行在 `keybindings.json` 给 `springNav.goToImplementation` / `springNav.goToReference` 绑定任意键位。
+
+- 光标可放在**调用点**（如 `userService.selectUserList(user)`）或**方法声明**上；两个方向都可用。
+- 某个方向没有匹配时：默认回退相反方向一级；两方向都没有，VS Code 显示标准 `No definition found`（右键菜单/快捷键则提示「未找到匹配的…」）。
+- 右键菜单只在 Java / XML 文件中显示，菜单文案不含「向上/向下」字样。
+
+#### 自定义快捷键（可选）
+
+插件默认只注册 `Ctrl/Cmd+点击`（向下）和 `F12`（向上）两个入口，不额外占用键盘组合，避免与系统或其它插件冲突。
+
+如果你想要更多键位，`转到Java实现` / `转到Java引用` 是普通命令，可在 VS Code 的 **Keyboard Shortcuts**（`Ctrl+K Ctrl+S` / `Cmd+K Cmd+S`）里搜索并绑定，或在 `keybindings.json` 中自行添加，例如：
+
+```json
+[
+  { "key": "ctrl+alt+j", "command": "springNav.goToImplementation", "when": "editorTextFocus" },
+  { "key": "ctrl+alt+k", "command": "springNav.goToReference", "when": "editorTextFocus" }
+]
+```
+
+> 说明：VS Code **不允许扩展绑定「鼠标点击 + 修饰键」组合**（`keybindings.json` 的 `key` 只接受键盘键）。所以 `Cmd+Option+Click` 这类手势无法注册；能区分方向的鼠标手势只有内置的 `Ctrl/Cmd+Click`（已用作「向下」），「向上」用 `F12` 或上述可配置快捷键。
+
+#### 实时接口路径搜索
+
+命令面板执行 `SpringNav: Search by URL path`（或绑定快捷键），打开**实时搜索列表**：
+
+- 输入即过滤，无需回车；输入框为空时列出全部接口。
+- 每行显示：`接口全路径 ((文件名) [HTTP方法]) 模块名`，例如 `/system/user/list  ((SysUserController.java) [GET])  ruoyi-admin`。
+- 支持多关键词（空格分隔，全部命中优先，若无结果则任一命中），如 `user list`。
+- 回车打开选中项；不显示文件的绝对路径。
 
 ---
 
@@ -93,6 +132,13 @@ mapper = ["*Mapper", "*Dao", "*Repository"]
 - **`impl-patterns`**：实现类命名模式，`*` / `?` 通配符。找不到 `implements` 关系时按它匹配实现类。
 
 配置变更会被 `FileSystemWatcher` 捕获，触发**内存局部重建**（复用已解析的模型，不重新扫盘）。
+
+### VS Code 设置
+
+| 设置 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `springNav.defaultDirection` | `down` \| `up` \| `both` | `down` | `Ctrl/Cmd+点击`（Go to Definition）的默认方向 |
+| `springNav.fallbackOnEmpty` | boolean | `true` | 指定方向无匹配时是否回退相反方向一级 |
 
 ---
 
@@ -144,12 +190,12 @@ npm run package       # 编译 + 构建 + npx @vscode/vsce package --no-dependen
 ## 测试
 
 ```bash
-node scripts/smoke.js                       # 合成最小 SpringBoot 工程，15 项断言
-node test/harness.js /path/to/RuoYi-Vue     # 真实开源项目端到端跳转断言
+node scripts/smoke.js                       # 合成最小 SpringBoot 工程，24 项断言
+node test/harness.js /path/to/RuoYi-Vue     # 真实开源项目端到端断言（23 项）
 ```
 
 `smoke.js` 自建一个 Controller/Service/Impl/Mapper/XML/Entity 齐全的临时工程；`harness.js` 对 [RuoYi-Vue](https://github.com/yangzongzhuan/RuoYi-Vue) 验证
-Controller → Service → Impl → Mapper → XML 双向链、实体字段 ↔ get/set、路径搜索、重载/继承、配置热加载与增量更新。两者都直接加载 `.node`，不依赖 VS Code。
+Controller → Service → Impl → Mapper → XML 双向链、**向下/向上与回退**、实体字段 ↔ get/set、**实时路径命中的文件名/HTTP 方法/模块名**、重载/继承、配置热加载与增量更新。两者都直接加载 `.node`，不依赖 VS Code。
 
 ---
 
@@ -162,6 +208,7 @@ Controller → Service → Impl → Mapper → XML 双向链、实体字段 ↔ 
 - **非标准写法**：不保证准确；解析器面向常见 SpringBoot 写法，不处理所有边界语法。
 - 不做语法高亮、代码补全、错误诊断、重构、格式化；**不替代 Red Hat Java**。
 - `this::method` 仅在单重载时精准；Lombok `@Data` 等生成的方法源码里不存在，不会产生跳转目标。
+- **鼠标组合手势**：VS Code 未把「鼠标点击 + 修饰键」开放给扩展 API，`Cmd/Ctrl+Option+Click` 之类无法绑定；只有内置 `Ctrl/Cmd+Click` 可用（已用作向下），向上请用 `F12` 或自定义快捷键。
 
 ---
 

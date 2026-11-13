@@ -178,6 +178,16 @@ function resolve(rel, needle, offset = 0) {
   return { out, at: p };
 }
 
+function resolveDir(rel, needle, direction, offset = 0, fallback = true) {
+  const p = pos(rel, needle, offset);
+  const uri = addon.uriForPath(path.join(root, rel));
+  return addon.resolveDirectional(uri, p.line, p.character, p.text, direction, fallback);
+}
+
+function hasLine(out, rel, line) {
+  return out.some((l) => l.uri.includes(rel) && l.line === line);
+}
+
 const results = [];
 function check(name, fn) {
   try {
@@ -273,6 +283,74 @@ function check(name, fn) {
       throw new Error('no BaseMapper location: ' + JSON.stringify(out));
     }
     return 'ok';
+  });
+
+  check('D-01 down: Controller call -> Service interface', () => {
+    const out = resolveDir(ctrl, 'getInfo(id)', 'down');
+    if (!out.some((l) => l.uri.includes(svc))) throw new Error('no service: ' + JSON.stringify(out));
+    return `-> ${out.length}`;
+  });
+
+  check('D-02 down: Service interface -> Impl; up -> Controller', () => {
+    const down = resolveDir(svc, 'getInfo(Long id)', 'down');
+    const up = resolveDir(svc, 'getInfo(Long id)', 'up');
+    if (!down.some((l) => l.uri.includes(impl))) throw new Error('down: no impl');
+    if (!up.some((l) => l.uri.includes(ctrl))) throw new Error('up: no controller');
+    return 'ok';
+  });
+
+  check('D-03 down: Impl call -> Mapper', () => {
+    const out = resolveDir(impl, 'selectById(id)', 'down');
+    if (!out.some((l) => l.uri.includes(mapper))) throw new Error('no mapper: ' + JSON.stringify(out));
+    return `-> ${out.length}`;
+  });
+
+  check('D-04 down: Mapper -> XML; up: XML -> Mapper', () => {
+    const down = resolveDir(mapper, 'selectById(Long id)', 'down');
+    const up = resolveDir(xml, '<select id="selectById"', 'up');
+    if (!down.some((l) => l.uri.includes(xml))) throw new Error('down: no xml');
+    if (!up.some((l) => l.uri.includes(mapper))) throw new Error('up: no mapper');
+    return 'ok';
+  });
+
+  check('D-05 fallback: XML has no down -> falls back to up (Mapper)', () => {
+    const out = resolveDir(xml, '<select id="selectById"', 'down');
+    if (!out.some((l) => l.uri.includes(mapper))) throw new Error('no mapper fallback: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('D-06 fallback: Controller has no up -> falls back to down (Service)', () => {
+    const out = resolveDir(ctrl, 'getInfo(Long id)', 'up');
+    if (!out.some((l) => l.uri.includes(svc))) throw new Error('no service fallback: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('D-07 entity: getter down -> field; field up -> getter', () => {
+    const f = pos(entity, 'private Long id;', 'private Long '.length);
+    const g = pos(entity, 'getId()');
+    const down = resolveDir(entity, 'getId()', 'down');
+    const up = resolveDir(entity, 'private Long id;', 'up', 'private Long '.length);
+    if (!hasLine(down, entity, f.line)) throw new Error('getter down did not reach field line ' + f.line);
+    if (!hasLine(up, entity, g.line)) throw new Error('field up did not reach getter line ' + g.line);
+    return 'ok';
+  });
+
+  check('D-08 path hits carry file/verb/module', () => {
+    const hits = addon.searchPathHits('/v1/user/getInfo');
+    if (hits.length === 0) throw new Error('no hits');
+    const h = hits[0];
+    if (!h.path.includes('/v1/user/getInfo')) throw new Error('bad path ' + h.path);
+    if (!h.file.includes('UserController.java')) throw new Error('bad file ' + h.file);
+    if (h.method !== 'GET') throw new Error('bad method ' + h.method);
+    return `${h.path} ${h.file} [${h.method}] ${h.module}`;
+  });
+
+  check('D-09 multi-token path hits', () => {
+    const hits = addon.searchPathHits('user getInfo');
+    if (!hits.some((h) => h.path.includes('/v1/user/getInfo'))) {
+      throw new Error('no multi-token hit: ' + JSON.stringify(hits.slice(0, 3)));
+    }
+    return `-> ${hits.length}`;
   });
 
   check('S-01 searchByPath /v1/user/getInfo -> Controller', () => {

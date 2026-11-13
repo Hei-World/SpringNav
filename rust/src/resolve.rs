@@ -6,6 +6,7 @@ use crate::index::{
 };
 use crate::model::*;
 use regex::Regex;
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 static RE_FALLBACK_CALL: LazyLock<Regex> =
@@ -64,38 +65,27 @@ fn targets_for(index: &Index, loc: &Loc) -> Vec<Loc> {
     out
 }
 
-pub fn resolve_definition(
+fn span_loc(index: &Index, uri: &str, line: u32, character: u32) -> Option<Loc> {
+    let spans = index.spans.get(&(uri.to_string(), line))?;
+    spans
+        .iter()
+        .find(|s| s.start <= character && character < s.end)
+        .map(|s| s.loc.clone())
+}
+
+/// Fallback resolution from the current line text, used only when the cursor
+/// misses every stored span (e.g. a freshly edited line).
+fn fallback_targets(
     index: &Index,
     cfg: &Config,
     uri: &str,
-    line: u32,
     character: u32,
     snippet: &str,
 ) -> Vec<Loc> {
     let mut out = Vec::new();
-
-    // Primary path: exact span hit -> O(1) adjacency lookup.
-    if let Some(spans) = index.spans.get(&(uri.to_string(), line)) {
-        if let Some(s) = spans
-            .iter()
-            .find(|s| s.start <= character && character < s.end)
-        {
-            out = targets_for(index, &s.loc);
-        }
-    }
-    if !out.is_empty() {
-        dedup_sort(&mut out);
-        return out;
-    }
-
-    // Fallback: use the passed line snippet when the cursor misses a stored
-    // span (e.g. between tokens, or a freshly edited line).
     let fi = match index.by_uri.get(uri) {
         Some(&i) => i,
-        None => {
-            dedup_sort(&mut out);
-            return out;
-        }
+        None => return out,
     };
 
     for caps in RE_FALLBACK_REF.captures_iter(snippet) {
@@ -131,7 +121,79 @@ pub fn resolve_definition(
             }
         }
     }
+    out
+}
 
+/// Direction-agnostic resolution (kept for compatibility / "both").
+pub fn resolve_definition(
+    index: &Index,
+    cfg: &Config,
+    uri: &str,
+    line: u32,
+    character: u32,
+    snippet: &str,
+) -> Vec<Loc> {
+    let mut out = Vec::new();
+    if let Some(loc) = span_loc(index, uri, line, character) {
+        out = targets_for(index, &loc);
+    }
+    if out.is_empty() {
+        out = fallback_targets(index, cfg, uri, character, snippet);
+    }
+    dedup_sort(&mut out);
+    out
+}
+
+/// Directional resolution.
+/// - `direction`: "down" (控制器→接口→实现→Mapper→XML, getXX→字段),
+///   "up" (reverse), or "both".
+/// - `fallback`: when the requested direction has no result, try the opposite
+///   direction once ("向下没有匹配项回退向上跳一级" / "已到顶级则向下").
+pub fn resolve_directional(
+    index: &Index,
+    cfg: &Config,
+    uri: &str,
+    line: u32,
+    character: u32,
+    snippet: &str,
+    direction: &str,
+    fallback: bool,
+) -> Vec<Loc> {
+    let dir = direction.to_ascii_lowercase();
+    let mut out = Vec::new();
+
+    if let Some(loc) = span_loc(index, uri, line, character) {
+        match dir.as_str() {
+            "up" => {
+                if let Some(v) = index.up.get(&loc) {
+                    out.extend(v.iter().cloned());
+                }
+                if out.is_empty() && fallback {
+                    if let Some(v) = index.down.get(&loc) {
+                        out.extend(v.iter().cloned());
+                    }
+                }
+            }
+            "down" => {
+                if let Some(v) = index.down.get(&loc) {
+                    out.extend(v.iter().cloned());
+                }
+                if out.is_empty() && fallback {
+                    if let Some(v) = index.up.get(&loc) {
+                        out.extend(v.iter().cloned());
+                    }
+                }
+            }
+            _ => out = targets_for(index, &loc),
+        }
+    }
+    if !out.is_empty() {
+        dedup_sort(&mut out);
+        return out;
+    }
+
+    // Cursor missed a span: use the snippet fallback (direction-agnostic).
+    out = fallback_targets(index, cfg, uri, character, snippet);
     dedup_sort(&mut out);
     out
 }
@@ -140,17 +202,20 @@ pub fn search_by_path(index: &Index, path: &str) -> Vec<Loc> {
     let norm = normalize_url_path(path);
     let mut out = Vec::new();
     if let Some(v) = index.path_index.get(&norm) {
-        out.extend(v.iter().cloned());
+        for &i in v {
+            out.push(index.path_entries[i].loc.clone());
+        }
     }
     if out.is_empty() {
-        // Approximate: suffix, prefix or substring match of the indexed URL.
         for (k, v) in &index.path_index {
             if k == &norm
                 || k.ends_with(&norm)
                 || norm.ends_with(k.as_str())
                 || k.contains(&norm)
             {
-                out.extend(v.iter().cloned());
+                for &i in v {
+                    out.push(index.path_entries[i].loc.clone());
+                }
             }
         }
     }
@@ -158,10 +223,75 @@ pub fn search_by_path(index: &Index, path: &str) -> Vec<Loc> {
         let alt = norm.trim_start_matches('/');
         for (k, v) in &index.path_index {
             if k.trim_start_matches('/') == alt {
-                out.extend(v.iter().cloned());
+                for &i in v {
+                    out.push(index.path_entries[i].loc.clone());
+                }
             }
         }
     }
     dedup_sort(&mut out);
+    out
+}
+
+/// Real-time path search for the QuickPick list: every whitespace token must
+/// appear in path/file/verb/module (AND); if that yields nothing, fall back to
+/// OR. Returns display-ready entries (no filesystem paths).
+pub fn search_path_hits(index: &Index, query: &str) -> Vec<PathEntry> {
+    let q = query.trim();
+    let ql = q.to_lowercase();
+    let tokens: Vec<String> = ql
+        .split_whitespace()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+
+    let hay = |e: &PathEntry| {
+        format!(
+            "{} {} {} {}",
+            e.path.to_lowercase(),
+            e.file.to_lowercase(),
+            e.method.to_lowercase(),
+            e.module.to_lowercase()
+        )
+    };
+
+    let mut picked: Vec<&PathEntry> = if tokens.is_empty() {
+        index.path_entries.iter().collect()
+    } else {
+        let and: Vec<&PathEntry> = index
+            .path_entries
+            .iter()
+            .filter(|e| tokens.iter().all(|t| hay(e).contains(t.as_str())))
+            .collect();
+        if and.is_empty() {
+            index
+                .path_entries
+                .iter()
+                .filter(|e| tokens.iter().any(|t| hay(e).contains(t.as_str())))
+                .collect()
+        } else {
+            and
+        }
+    };
+
+    picked.sort_by(|a, b| {
+        let ea = a.path == q;
+        let eb = b.path == q;
+        eb.cmp(&ea)
+            .then_with(|| a.path.len().cmp(&b.path.len()))
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.loc.cmp(&b.loc))
+    });
+
+    let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+    let mut out = Vec::new();
+    for e in picked {
+        if seen.insert((e.path.clone(), e.loc.line, e.loc.character)) {
+            out.push(e.clone());
+            if out.len() >= 500 {
+                break;
+            }
+        }
+    }
     out
 }

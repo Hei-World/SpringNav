@@ -212,14 +212,48 @@ fn parse_annotation(t: &str) -> Option<Annotation> {
     let caps = RE_ANNOTATION.captures(t)?;
     let name = caps.get(1)?.as_str().rsplit('.').next()?.to_string();
     let mut paths = Vec::new();
+    let mut raw = String::new();
     if let Some(args) = caps.get(2) {
+        raw = args.as_str().to_string();
         for q in RE_QUOTED.captures_iter(args.as_str()) {
             if let Some(m) = q.get(1) {
                 paths.push(m.as_str().to_string());
             }
         }
     }
-    Some(Annotation { name, paths })
+    Some(Annotation { name, paths, raw })
+}
+
+/// Infer HTTP verbs from mapping annotations.
+fn collect_http_methods(anns: &[Annotation]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in anns {
+        let m = match a.name.as_str() {
+            "GetMapping" => Some("GET"),
+            "PostMapping" => Some("POST"),
+            "PutMapping" => Some("PUT"),
+            "DeleteMapping" => Some("DELETE"),
+            "PatchMapping" => Some("PATCH"),
+            _ => None,
+        };
+        if let Some(m) = m {
+            if !out.iter().any(|x: &String| x == m) {
+                out.push(m.to_string());
+            }
+            continue;
+        }
+        if a.name == "RequestMapping" {
+            for verb in ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"] {
+                if a.raw.contains(&format!("RequestMethod.{}", verb)) && !out.iter().any(|x| x == verb) {
+                    out.push(verb.to_string());
+                }
+            }
+            if out.is_empty() {
+                out.push("REQUEST".to_string());
+            }
+        }
+    }
+    out
 }
 
 fn collect_paths(anns: &[Annotation]) -> Vec<String> {
@@ -375,6 +409,7 @@ fn try_method_decl(
             param_types,
             loc: Loc::new(uri, i as u32, col(first_line, name_byte)),
             paths: Vec::new(),
+            http_methods: Vec::new(),
         },
         consumed,
     ))
@@ -579,6 +614,7 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             try_method_decl(line, &lines, i, &c.uri, &model.class_name)
         {
             md.paths = collect_paths(&pending);
+            md.http_methods = collect_http_methods(&pending);
             model.methods.push(md);
             pending.clear();
             // Calls / refs may appear on the declaration line itself.

@@ -19,13 +19,17 @@ pub struct Index {
     pub interface_impls: HashMap<String, Vec<usize>>,
     /// (file idx, method name) -> method indices (overloads)
     pub method_index: HashMap<(usize, String), Vec<usize>>,
-    /// full URL -> controller method locations
-    pub path_index: HashMap<String, Vec<Loc>>,
+    /// full URL -> indices into `path_entries`
+    pub path_index: HashMap<String, Vec<usize>>,
+    pub path_entries: Vec<PathEntry>,
     /// (namespace, id) -> XML statement locations
     pub xml_index: HashMap<(String, String), Vec<Loc>>,
     pub spans: HashMap<(String, u32), Vec<Span>>,
     /// undirected navigation edges (both endpoints registered)
     pub edges: HashMap<Loc, Vec<Loc>>,
+    /// directional edges: down = 控制器→接口→实现→Mapper→XML；up = 反向
+    pub down: HashMap<Loc, Vec<Loc>>,
+    pub up: HashMap<Loc, Vec<Loc>>,
     /// one-way aliases: call sites / method refs -> declarations
     pub aliases: HashMap<Loc, Vec<Loc>>,
 }
@@ -46,9 +50,12 @@ impl Index {
             interface_impls: HashMap::new(),
             method_index: HashMap::new(),
             path_index: HashMap::new(),
+            path_entries: Vec::new(),
             xml_index: HashMap::new(),
             spans: HashMap::new(),
             edges: HashMap::new(),
+            down: HashMap::new(),
+            up: HashMap::new(),
             aliases: HashMap::new(),
         }
     }
@@ -378,14 +385,82 @@ fn add_edge(index: &mut Index, a: Loc, b: Loc) {
     index.edges.entry(b).or_default().push(a);
 }
 
+/// Add a directional relation: `upper` is closer to the controller / top of the
+/// chain, `lower` is deeper (toward Mapper / XML / entity field).
+fn add_edge_dir(index: &mut Index, upper: Loc, lower: Loc) {
+    if upper == lower {
+        return;
+    }
+    add_edge(index, upper.clone(), lower.clone());
+    index.down.entry(upper.clone()).or_default().push(lower.clone());
+    index.up.entry(lower).or_default().push(upper);
+}
+
+/// Same-level peers (e.g. getter <-> setter): both directions resolve to each other.
+fn add_peer(index: &mut Index, a: Loc, b: Loc) {
+    if a == b {
+        return;
+    }
+    add_edge(index, a.clone(), b.clone());
+    index.down.entry(a.clone()).or_default().push(b.clone());
+    index.up.entry(b.clone()).or_default().push(a.clone());
+    index.down.entry(b.clone()).or_default().push(a.clone());
+    index.up.entry(a).or_default().push(b);
+}
+
 fn add_alias(index: &mut Index, a: Loc, b: Loc) {
     if a == b {
         return;
     }
-    index.aliases.entry(a).or_default().push(b);
+    index.aliases.entry(a.clone()).or_default().push(b.clone());
+    // Aliases (call sites, method refs, field->type) are reachable from either
+    // direction so that both gestures always land on the declaration.
+    index.down.entry(a.clone()).or_default().push(b.clone());
+    index.up.entry(a).or_default().push(b);
+}
+
+/// Derive the Maven/Gradle module name from a file path.
+fn module_of(path: &str) -> String {
+    let p = path.replace('\\', "/");
+    for marker in ["/src/main/java/", "/src/main/kotlin/", "/src/main/resources/", "/src/"] {
+        if let Some(i) = p.find(marker) {
+            return p[..i].rsplit('/').next().unwrap_or("").to_string();
+        }
+    }
+    String::new()
+}
+
+fn push_path_entry(
+    index: &mut Index,
+    url: &str,
+    file: &str,
+    method: &str,
+    module: &str,
+    loc: &Loc,
+) {
+    if let Some(list) = index.path_index.get(url) {
+        if list
+            .iter()
+            .any(|&i| index.path_entries[i].loc == *loc)
+        {
+            return;
+        }
+    }
+    let idx = index.path_entries.len();
+    index.path_entries.push(PathEntry {
+        path: url.to_string(),
+        file: file.to_string(),
+        method: method.to_string(),
+        module: module.to_string(),
+        loc: loc.clone(),
+    });
+    index.path_index.entry(url.to_string()).or_default().push(idx);
 }
 
 fn build_maps(index: &mut Index) {
+    // Path entries are collected first (immutable borrow of `files`), then
+    // applied after the loop so we never borrow `index` both ways at once.
+    let mut path_candidates: Vec<(String, String, String, String, Loc)> = Vec::new();
     for (idx, m) in index.files.iter().enumerate() {
         if m.kind == FileKind::Java {
             index.by_uri.insert(m.uri.clone(), idx);
@@ -416,23 +491,34 @@ fn build_maps(index: &mut Index) {
                 } else {
                     m.class_paths.clone()
                 };
+                let file = format!("{}.java", m.class_name);
+                let module = module_of(&m.path);
                 for md in &m.methods {
                     if md.paths.is_empty() {
                         continue;
                     }
+                    let verb = md
+                        .http_methods
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "ANY".to_string());
                     for b in &bases {
                         for p in &md.paths {
-                            let full = join_url_path(b, p);
-                            index
-                                .path_index
-                                .entry(full)
-                                .or_default()
-                                .push(md.loc.clone());
-                            index
-                                .path_index
-                                .entry(normalize_url_path(p))
-                                .or_default()
-                                .push(md.loc.clone());
+                            path_candidates.push((
+                                join_url_path(b, p),
+                                file.clone(),
+                                verb.clone(),
+                                module.clone(),
+                                md.loc.clone(),
+                            ));
+                            // Also index the method path alone for forgiving search.
+                            path_candidates.push((
+                                normalize_url_path(p),
+                                file.clone(),
+                                verb.clone(),
+                                module.clone(),
+                                md.loc.clone(),
+                            ));
                         }
                     }
                 }
@@ -446,6 +532,10 @@ fn build_maps(index: &mut Index) {
                     .push(st.loc.clone());
             }
         }
+    }
+
+    for (url, file, verb, module, loc) in path_candidates {
+        push_path_entry(index, &url, &file, &verb, &module, &loc);
     }
 }
 
@@ -545,7 +635,8 @@ fn build_edges(index: &mut Index, cfg: &Config) {
             for tm in &targets {
                 add_alias(index, cs.loc.clone(), tm.clone());
                 if let Some(ol) = &owner_loc {
-                    add_edge(index, ol.clone(), tm.clone());
+                    // Controller method -> Service method, ServiceImpl -> Mapper: down.
+                    add_edge_dir(index, ol.clone(), tm.clone());
                 }
             }
         }
@@ -563,7 +654,8 @@ fn build_edges(index: &mut Index, cfg: &Config) {
                 let targets =
                     find_methods(index, &[ii], &md.name, Some(md.param_types.len()));
                 for tm in targets {
-                    add_edge(index, md.loc.clone(), tm);
+                    // interface method -> impl method: down.
+                    add_edge_dir(index, md.loc.clone(), tm);
                 }
             }
         }
@@ -586,7 +678,8 @@ fn build_edges(index: &mut Index, cfg: &Config) {
                 stmts = fuzzy_xml(index, &ns, &md.name);
             }
             for st in stmts {
-                add_edge(index, md.loc.clone(), st);
+                // Mapper method -> XML statement: down.
+                add_edge_dir(index, md.loc.clone(), st);
             }
         }
     }
@@ -631,15 +724,16 @@ fn build_edges(index: &mut Index, cfg: &Config) {
                     sl.push(m.loc.clone());
                 }
             }
+            // Entity: getter/setter -> field is "down"; field -> accessor is "up".
             for g in &gl {
-                add_edge(index, f.loc.clone(), g.clone());
+                add_edge_dir(index, g.clone(), f.loc.clone());
             }
             for s in &sl {
-                add_edge(index, f.loc.clone(), s.clone());
+                add_edge_dir(index, s.clone(), f.loc.clone());
             }
             for g in &gl {
                 for s in &sl {
-                    add_edge(index, g.clone(), s.clone());
+                    add_peer(index, g.clone(), s.clone());
                 }
             }
         }
@@ -682,8 +776,15 @@ fn finalize(index: &mut Index) {
     for v in index.aliases.values_mut() {
         dedup_sort(v);
     }
-    for v in index.path_index.values_mut() {
+    for v in index.down.values_mut() {
         dedup_sort(v);
+    }
+    for v in index.up.values_mut() {
+        dedup_sort(v);
+    }
+    for v in index.path_index.values_mut() {
+        v.sort_unstable();
+        v.dedup();
     }
     for v in index.xml_index.values_mut() {
         dedup_sort(v);

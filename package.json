@@ -35,8 +35,57 @@
       {
         "command": "springNav.searchByPath",
         "title": "SpringNav: Search by URL path"
+      },
+      {
+        "command": "springNav.goToImplementation",
+        "title": "转到Java实现"
+      },
+      {
+        "command": "springNav.goToReference",
+        "title": "转到Java引用"
       }
-    ]
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "springNav.goToImplementation",
+          "when": "editorLangId == 'java' || editorLangId == 'xml'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "springNav.goToReference",
+          "when": "editorLangId == 'java' || editorLangId == 'xml'",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "springNav.goToReference",
+        "key": "f12",
+        "when": "editorTextFocus && (editorLangId == 'java' || editorLangId == 'xml')"
+      }
+    ],
+    "configuration": {
+      "title": "SpringNav",
+      "properties": {
+        "springNav.defaultDirection": {
+          "type": "string",
+          "enum": [
+            "down",
+            "up",
+            "both"
+          ],
+          "default": "down",
+          "description": "Ctrl/Cmd+点击（Go to Definition）的默认方向。down = 控制器→接口→实现→Mapper→XML，getXX→字段；up = 逐级反向；both = 两个方向都返回。"
+        },
+        "springNav.fallbackOnEmpty": {
+          "type": "boolean",
+          "default": true,
+          "description": "指定方向没有匹配结果时，是否自动回退到相反方向一级。"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile && npm run build:native",
