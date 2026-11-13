@@ -50,7 +50,15 @@ static RE_THIS_FIELD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bthis\s*\.\s*([a-zA-Z_$][\w$]*)").unwrap());
 
 static RE_METHOD_REF: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bthis\s*::\s*(\w+)").unwrap());
+    LazyLock::new(|| Regex::new(r"\b([A-Za-z_$][\w$]*)\s*::\s*(\w+)").unwrap());
+
+/// Local variable declaration: `Type name =` (not `==`), single line.
+static RE_VAR_DECL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|[;{(]\s*)(?:final\s+)?([A-Z][\w.]*(?:<[^=;]*?>)?(?:\[\])?)\s+([a-z_$][\w$]*)\s*=[^=]").unwrap());
+
+/// Bare ALL_CAPS constant/field identifier (not a call, not a member access).
+static RE_BARE_CONST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b([A-Z][A-Z0-9_]{2,})\b").unwrap());
 
 static RE_MAPPER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)<mapper\b[^>]*\bnamespace\s*=\s*["']([^"']+)["']"#).unwrap()
@@ -353,6 +361,28 @@ fn parse_class_decl(line: &str) -> Option<(String, bool, Vec<String>, usize)> {
     Some((name, kind == "interface", supers, caps.get(2)?.start()))
 }
 
+/// Parameter list with names: (type_simple, name).
+fn parse_params_named(s: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for part in split_top_level(s, ',') {
+        let cleaned = RE_PARAM_ANN.replace_all(part.trim(), "");
+        let words: Vec<&str> = cleaned
+            .split_whitespace()
+            .filter(|w| !MODIFIERS.contains(w))
+            .collect();
+        if words.len() < 2 {
+            continue;
+        }
+        let ty = words[words.len() - 2];
+        let name = words[words.len() - 1];
+        if !is_ident(name) {
+            continue;
+        }
+        out.push((strip_to_simple(ty), name.to_string()));
+    }
+    out
+}
+
 fn parse_params(s: &str) -> Vec<String> {
     let mut types = Vec::new();
     for part in split_top_level(s, ',') {
@@ -426,7 +456,7 @@ fn try_method_decl(
     i: usize,
     uri: &str,
     class_name: &str,
-) -> Option<(MethodDecl, usize)> {
+) -> Option<(MethodDecl, usize, Vec<VarDecl>)> {
     let caps = RE_METHOD.captures(first_line)?;
     let name = caps.get(2)?.as_str().to_string();
     let open = caps.get(0)?.end().checked_sub(1)?;
@@ -459,6 +489,15 @@ fn try_method_decl(
     }
     let param_types = parse_params(params);
     let name_byte = caps.get(2)?.start();
+    let param_vars: Vec<VarDecl> = parse_params_named(params)
+        .into_iter()
+        .map(|(ty, n)| VarDecl {
+            method: None,
+            name: n,
+            type_simple: ty,
+            line: i as u32,
+        })
+        .collect();
     Some((
         MethodDecl {
             name,
@@ -469,6 +508,7 @@ fn try_method_decl(
             accessor_field: None,
         },
         consumed,
+        param_vars,
     ))
 }
 
@@ -667,9 +707,99 @@ fn detect_accessor(body: &[&str], name: &str) -> Option<String> {
 
 fn scan_method_refs(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
     for caps in RE_METHOD_REF.captures_iter(line) {
-        let m = caps.get(1).unwrap();
+        let cls = caps.get(1).unwrap();
+        let m = caps.get(2).unwrap();
+        let class = if cls.as_str() == "this" {
+            String::new()
+        } else {
+            cls.as_str().to_string()
+        };
         model.method_refs.push(MethodRef {
             name: m.as_str().to_string(),
+            loc: Loc::new(uri, line_no, col(line, m.start())),
+            class,
+        });
+    }
+}
+
+/// `Type name =` local declarations (single line; params are captured
+/// separately in `try_method_decl`).
+fn scan_var_decls(line: &str, line_no: u32, model: &mut FileModel) {
+    for caps in RE_VAR_DECL.captures_iter(line) {
+        let ty = caps.get(1).unwrap().as_str();
+        let name = caps.get(2).unwrap().as_str();
+        let simple = strip_to_simple(ty);
+        if simple.is_empty() || CONTROL.contains(&name) {
+            continue;
+        }
+        model.var_decls.push(VarDecl {
+            method: None,
+            name: name.to_string(),
+            type_simple: simple,
+            line: line_no,
+        });
+    }
+}
+
+/// Mask string literal contents with spaces (positions unchanged) so
+/// identifier scans never match inside "text".
+fn mask_strings(line: &str) -> String {
+    let mut out: Vec<char> = line.chars().collect();
+    let mut in_str = false;
+    let mut i = 0usize;
+    while i < out.len() {
+        let c = out[i];
+        if c == '\\' {
+            if in_str && i + 1 < out.len() {
+                out[i] = ' ';
+                out[i + 1] = ' ';
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_str = !in_str;
+            out[i] = ' ';
+        } else if in_str {
+            out[i] = ' ';
+        }
+        i += 1;
+    }
+    out.into_iter().collect()
+}
+
+/// Bare ALL_CAPS identifiers (constants like TASK_STATUS_DONE): not a call,
+/// not a member access, not `new`, not inside strings, not on declaration
+/// lines. Resolution is index-time (current-class field lookup), so a match
+/// without a matching field produces nothing.
+fn scan_bare_consts(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
+    let masked = mask_strings(line);
+    let t = masked.trim_start();
+    let no_paren = !t.contains('(');
+    if no_paren
+        && (t.starts_with("private ")
+            || t.starts_with("public ")
+            || t.starts_with("protected "))
+        && t.ends_with(';')
+    {
+        return; // field declaration line
+    }
+    for caps in RE_BARE_CONST.captures_iter(&masked) {
+        let m = caps.get(1).unwrap();
+        let name = m.as_str();
+        let end = m.end();
+        if masked.as_bytes().get(end) == Some(&b'(') {
+            continue;
+        }
+        let before = &masked[..m.start()];
+        if before.ends_with('.') || before.ends_with("new ") || before.ends_with("::") {
+            continue;
+        }
+        model.field_refs.push(FieldRef {
+            class: String::new(),
+            name: name.to_string(),
             loc: Loc::new(uri, line_no, col(line, m.start())),
         });
     }
@@ -827,13 +957,19 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             continue;
         }
 
-        if let Some((mut md, consumed)) =
+        if let Some((mut md, consumed, param_vars)) =
             try_method_decl(line, &lines, i, &c.uri, &model.class_name)
         {
             md.paths = collect_paths(&pending);
             md.http_methods = collect_http_methods(&pending);
             md.accessor_field = detect_accessor(&lines[i + consumed..], &md.name);
             model.methods.push(md);
+            let idx = model.methods.len() - 1;
+            for mut v in param_vars {
+                v.method = Some(idx);
+                v.line = i as u32;
+                model.var_decls.push(v);
+            }
             pending.clear();
             // Calls / refs may appear on the declaration line itself.
             scan_calls(line, i as u32, &c.uri, &mut model);
@@ -851,6 +987,7 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             scan_calls(line, i as u32, &c.uri, &mut model);
             scan_bare_calls(line, i as u32, &c.uri, &mut model);
             scan_field_refs(line, i as u32, &c.uri, &mut model);
+            scan_var_decls(line, i as u32, &mut model);
             scan_method_refs(line, i as u32, &c.uri, &mut model);
             i += 1;
             continue;
@@ -859,6 +996,8 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
         scan_calls(line, i as u32, &c.uri, &mut model);
         scan_bare_calls(line, i as u32, &c.uri, &mut model);
         scan_field_refs(line, i as u32, &c.uri, &mut model);
+        scan_bare_consts(line, i as u32, &c.uri, &mut model);
+        scan_var_decls(line, i as u32, &mut model);
         scan_method_refs(line, i as u32, &c.uri, &mut model);
         i += 1;
     }
@@ -872,6 +1011,21 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
         format!("{}.{}", model.package, model.class_name)
     };
     assign_owners(&mut model);
+    // Local variable declarations: assign the enclosing method by line.
+    for v in &mut model.var_decls {
+        if v.method.is_none() {
+            let mut best: Option<usize> = None;
+            for (idx, m) in model.methods.iter().enumerate() {
+                if m.loc.line <= v.line {
+                    match best {
+                        Some(b) if model.methods[b].loc.line >= m.loc.line => {}
+                        _ => best = Some(idx),
+                    }
+                }
+            }
+            v.method = best;
+        }
+    }
     Some(model)
 }
 

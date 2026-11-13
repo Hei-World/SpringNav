@@ -62,6 +62,17 @@ pub struct MethodDecl {
     pub accessor_field: Option<String>,
 }
 
+/// A parameter or local variable declaration (`Type name`), for P2 receiver
+/// type resolution. `method` = owning method index (assigned post-parse).
+#[derive(Clone, Debug, Default)]
+pub struct VarDecl {
+    pub method: Option<usize>,
+    pub name: String,
+    pub type_simple: String,
+    /// Line of the declaration (for owner assignment; params set method directly).
+    pub line: u32,
+}
+
 /// One entry of the interface-path index, carrying display metadata.
 #[derive(Clone, Debug, Default)]
 pub struct PathEntry {
@@ -116,6 +127,8 @@ pub struct FieldRef {
 pub struct MethodRef {
     pub name: String,
     pub loc: Loc,
+    /// Receiver simple class name (`Cls::method`); empty = `this::method`.
+    pub class: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -149,6 +162,9 @@ pub struct FileModel {
     pub method_refs: Vec<MethodRef>,
     /// Imported fully-qualified class names (drives static-call resolution).
     pub imports: Vec<String>,
+    /// Parameter and local variable declarations with declared types
+    /// (drives P2 receiver-type resolution).
+    pub var_decls: Vec<VarDecl>,
     /// Field/constant references (`Class.CONST`, `this.field`).
     pub field_refs: Vec<FieldRef>,
     // Role is assigned while building the index (config may override it).

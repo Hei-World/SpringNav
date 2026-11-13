@@ -961,11 +961,38 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
                                     }
                                 }
                             }
-                        } else if cs.field.chars().next().is_some_and(|c| c.is_uppercase()) {
-                            // static call on a project class (same package / import / unique simple name)
-                            let tfiles = resolve_class(index, fi, &cs.field);
-                            if !tfiles.is_empty() {
-                                targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
+                        } else {
+                            // P2: parameter / local variable receiver
+                            // (`body.getNote()` where body is a param).
+                            let mut hit = false;
+                            if let Some(owner) = cs.owner_method {
+                                let ty = m.var_decls.iter().find(|v| {
+                                    v.method == Some(owner) && v.name == cs.field
+                                }).map(|v| v.type_simple.clone());
+                                if let Some(t) = ty {
+                                    let mut tfiles = resolve_type_files(index, &t);
+                                    if tfiles.is_empty() {
+                                        tfiles = resolve_class(index, fi, &t);
+                                    }
+                                    if !tfiles.is_empty() {
+                                        targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
+                                        if targets.is_empty() {
+                                            let lt = find_lombok(index, &tfiles, &cs.method, Some(cs.arg_count));
+                                            if !lt.is_empty() {
+                                                targets = lt;
+                                                from_lombok = true;
+                                            }
+                                        }
+                                        hit = !targets.is_empty();
+                                    }
+                                }
+                            }
+                            if !hit && cs.field.chars().next().is_some_and(|c| c.is_uppercase()) {
+                                // static call on a project class (same package / import / unique simple name)
+                                let tfiles = resolve_class(index, fi, &cs.field);
+                                if !tfiles.is_empty() {
+                                    targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
+                                }
                             }
                         }
                     }
@@ -987,13 +1014,19 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
             .owner_method
             .and_then(|o| index.files[fi].methods.get(o).map(|x| x.loc.clone()));
         for tm in &targets {
-            out.push(k2(cs.loc.clone(), tm.clone()));
-            // Owner-declaration down edge ONLY for injected-field calls:
-            // declaration clicks must not chain into static/util targets.
-            if let Some(ol) = &owner_loc {
-                if !from_lombok && field_based && cs.kind == 0 {
-                    out.push(k1(ol.clone(), tm.clone()));
+            if cs.kind == 0 {
+                out.push(k2(cs.loc.clone(), tm.clone()));
+                // Owner-declaration down edge ONLY for injected-field calls:
+                // declaration clicks must not chain into static/util targets.
+                if let Some(ol) = &owner_loc {
+                    if !from_lombok && field_based {
+                        out.push(k1(ol.clone(), tm.clone()));
+                    }
                 }
+            } else {
+                // this./bare calls anchor at the CALL SITE: down = definition,
+                // up = reference (method declaration -> callers).
+                out.push(k1(cs.loc.clone(), tm.clone()));
             }
         }
     }
@@ -1088,11 +1121,26 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
         }
     }
 
-    // (e) this::method references (J-07), overloads -> list
+    // (e) X::method references (J-07 + P2 `Class::method`): overloads -> list;
+    // Lombok accessors resolve to the FIELD declaration.
     for mr in &m.method_refs {
-        let mut ms = find_methods(index, &[fi], &mr.name, None);
+        let scope: Vec<usize> = if mr.class.is_empty() {
+            let mut s = vec![fi];
+            for sup in &m.supers {
+                if let Some(&sf) = index.by_fqcn.get(sup) {
+                    s.push(sf);
+                }
+            }
+            s
+        } else {
+            resolve_class(index, fi, &mr.class)
+        };
+        if scope.is_empty() {
+            continue;
+        }
+        let mut ms = find_methods(index, &scope, &mr.name, None);
         if ms.is_empty() {
-            ms = find_lombok(index, &[fi], &mr.name, None);
+            ms = find_lombok(index, &scope, &mr.name, None);
         }
         for x in ms {
             out.push(k2(mr.loc.clone(), x));

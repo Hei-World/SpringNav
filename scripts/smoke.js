@@ -259,6 +259,48 @@ public class StaticCallController {
 `
 );
 
+write(
+  'src/main/java/com/example/domain/TaskEvent.java',
+  `package com.example.domain;
+
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+
+@Builder
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class TaskEvent {
+    private String loopNote;
+    private String taskStatus;
+}
+`
+);
+
+write(
+  'src/main/java/com/example/service/TaskEventService.java',
+  `package com.example.service;
+
+import com.example.domain.TaskEvent;
+
+public class TaskEventService {
+    private static final String TASK_STATUS_DONE = "done";
+
+    public boolean doComplete(TaskEvent event, TaskEvent body) {
+        if (TASK_STATUS_DONE.equals(event.getTaskStatus())) {
+            mark(TaskEvent::getLoopNote, body.getLoopNote());
+        }
+        return true;
+    }
+
+    private void mark(java.util.function.Function<TaskEvent, String> f, String v) {
+    }
+}
+`
+);
+
 // Position of the first occurrence of `needle` (+ offset) in a file.
 function pos(rel, needle, offset = 0) {
   const lines = fs.readFileSync(path.join(root, rel), 'utf8').split('\n');
@@ -480,6 +522,52 @@ function check(name, fn) {
   check('P1-9 无方向: this.field 读取 -> 字段声明', () => {
     const out = resolve(P1CALLER, 'return this.marker', 12).out;
     if (!out.some((l) => l.uri.includes(P1CALLER))) throw new Error('no field: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  // ---- P2: 参数/局部变量类型 + Class::引用 + 裸常量 ----
+  const P2ENT = 'src/main/java/com/example/domain/TaskEvent.java';
+  const P2SVC = 'src/main/java/com/example/service/TaskEventService.java';
+
+  check('P2-1 down: 参数接收 body.getLoopNote() -> Lombok 实体字段', () => {
+    const out = resolveDir(P2SVC, 'body.getLoopNote()', 'down', 6);
+    if (!out.some((l) => l.uri.includes(P2ENT))) throw new Error('no entity: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-2 down: 参数接收 event.getTaskStatus() -> Lombok 实体字段', () => {
+    const out = resolveDir(P2SVC, 'event.getTaskStatus()', 'down', 7);
+    if (!out.some((l) => l.uri.includes(P2ENT))) throw new Error('no entity: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-3 down: 方法引用 TaskEvent::getLoopNote -> 实体字段', () => {
+    const out = resolveDir(P2SVC, 'TaskEvent::getLoopNote', 'down', 13);
+    if (!out.some((l) => l.uri.includes(P2ENT))) throw new Error('no entity: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-4 down: 裸常量引用 -> 常量声明', () => {
+    const out = resolveDir(P2SVC, 'TASK_STATUS_DONE.equals', 'down', 2);
+    if (!out.some((l) => l.uri.includes(P2SVC))) throw new Error('no decl: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-5 up: 常量声明 -> 引用点', () => {
+    const out = resolveDir(P2SVC, 'private static final String TASK_STATUS_DONE', 'up', 28);
+    if (!out.some((l) => l.uri.includes(P2SVC))) throw new Error('no ref: ' + JSON.stringify(out));
+    return `-> ${out.length}`;
+  });
+
+  check('P2-6 up: 方法声明 -> 调用点（当前类）', () => {
+    const out = resolveDir(P2SVC, 'private void mark(', 'up', 15);
+    if (!out.some((l) => l.uri.includes(P2SVC))) throw new Error('no caller: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-7 down: 调用点 -> 方法定义', () => {
+    const out = resolveDir(P2SVC, 'mark(TaskEvent::getLoopNote', 'down', 2);
+    if (!out.some((l) => l.uri.includes(P2SVC))) throw new Error('no def: ' + JSON.stringify(out));
     return 'ok';
   });
 
