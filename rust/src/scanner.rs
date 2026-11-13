@@ -141,7 +141,7 @@ pub fn collect_multi(roots_in: &[String]) -> (Vec<Candidate>, Vec<String>, Vec<S
     (out, projects, roots)
 }
 
-fn normalize_path(p: &str) -> String {
+pub fn normalize_path(p: &str) -> String {
     let mut s = p.replace('\\', "/");
     while s.len() > 1 && s.ends_with('/') {
         s.pop();

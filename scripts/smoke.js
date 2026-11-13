@@ -575,6 +575,20 @@ function check(name, fn) {
     return `files=${two.files} projects=${two.projects}`;
   });
 
+  await checkAsync('RS-01 reindexRoot rebuilds one project only', async () => {
+    await addon.buildIndex([parent]);
+    const before = addon.getStatus();
+    wm(
+      'proj-a/mod-web/src/main/java/a/web/NewController.java',
+      'package a.web;\nimport org.springframework.web.bind.annotation.*;\n@RestController\n@RequestMapping("/new")\npublic class NewController {\n    @GetMapping("/y")\n    public void y() {}\n}\n'
+    );
+    const r = addon.reindexRoot(path.join(parent, 'proj-a'));
+    if (r.files !== before.files + 1) throw new Error(`files ${before.files} -> ${r.files}`);
+    if (!addon.searchPathHits('/new/y').length) throw new Error('new controller not indexed');
+    if (!addon.searchPathHits('/b/x').length) throw new Error('proj-b lost after reindex');
+    return `files ${before.files} -> ${r.files}`;
+  });
+
   const failed = results.filter((r) => !r).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed`);
   fs.rmSync(root, { recursive: true, force: true });

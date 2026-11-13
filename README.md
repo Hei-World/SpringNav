@@ -35,7 +35,7 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 | F-01 | Java 项目检测：工作区存在 `pom.xml` / `build.gradle` / `build.gradle.kts` 才激活 |
 | F-02 | 惰性异步索引构建，只解析 Controller / Service / ServiceImpl / Mapper / Entity / `*Mapper.xml` 相关文件 |
 | F-03 | 增量更新：保存时只重新解析变更文件（250ms 防抖、批量合并），内存重建索引，不扫盘 |
-| F-04 | 手动重建：命令 `SpringNav: 重新加载索引`，或点击状态栏重建 |
+| F-04 | 手动重建：命令 `SpringNav: 重新加载索引` / 点击状态栏（全部）；资源管理器右键文件夹 `SpringNav: 重建此项目索引`（单个项目） |
 | F-05 | 状态栏：`索引中…` / `N 文件`，悬停显示项目/模块/方法/边数量 |
 | F-06 | 多根工作区 + 多模块项目：每个项目只扫描一次，嵌套根自动去重，子模块不单独建项目 |
 | J-01 | Controller 方法 ↔ Service 接口方法 |
@@ -64,6 +64,7 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 **索引与多项目：**
 
 - 左侧状态栏显示 `SpringNav: N 文件`；悬停可看项目/模块/方法/边数量。**点击状态栏**或执行命令面板的 `SpringNav: 重新加载索引` 可手动全量重建。
+- **单个项目重建**：在资源管理器右键项目（或模块）目录 → `SpringNav: 重建此项目索引`，只重扫该目录，其它项目的索引保持不变。
 - **多根工作区**：所有工作区文件夹都会索引；同一项目或嵌套的根只扫描一次，不会重复。
 - **多模块项目**：从项目根扫描一次（子模块 `pom.xml` 不会被当成独立项目），模块名显示为模块相对路径，如 `ruoyi-admin`、`proj-a/mod-web`。
 - **保存文件**：只重新解析被保存的 java/xml 文件（250ms 防抖、批量合并），索引在内存重建，不重新扫盘。
@@ -265,7 +266,7 @@ npm run package     # 把上面所有 .node 一起打进 spring-nav-<version>.vs
 ## 测试
 
 ```bash
-node scripts/smoke.js                       # 合成工程，36 项断言（含 Lombok、多根、增量）
+node scripts/smoke.js                       # 合成工程，37 项断言（含 Lombok、多根、增量、单项目重建）
 node test/harness.js /path/to/RuoYi-Vue     # 真实开源项目端到端断言（26 项）
 ```
 
@@ -294,6 +295,8 @@ Controller → Service → Impl → Mapper → XML 双向链、**向下/向上�
 | `screenshots/17-reindex-command.png` | 命令面板中的 `SpringNav: 重新加载索引` |
 | `screenshots/18-reindex-done.png` | 重建完成提示（1 项目 / 6 模块 / 150 文件） |
 | `screenshots/19-multiroot.png` | 多根工作区：2 项目 / 2 模块 / 3 文件 |
+| `screenshots/20-explorer-reindex.png` | 资源管理器右键：`SpringNav: 重建此项目索引` |
+| `screenshots/21-reindex-folder-done.png` | 单项目重建完成（`ruoyi-admin`，索引共 150 文件 / 6 模块） |
 | `screenshots/10-context-menu.png` | 右键菜单：`转到Java实现` / `转到Java引用` |
 | `screenshots/11-context-menu-jump.png` | 右键「转到Java实现」实际跳转到字段 |
 | `screenshots/12-search-empty.png` | 路径搜索打开时列表为空 |

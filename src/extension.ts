@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 // The TS shell is intentionally logic-free (P-05): it only activates, registers
@@ -49,6 +51,7 @@ interface SpringNavNative {
   searchPathHits(query: string): NativePathHit[];
   updateFiles(uris: string[]): BuildResult;
   updateFile(uri: string): void;
+  reindexRoot(root: string): BuildResult;
   reloadConfig(): BuildResult;
   getStatus(): BuildResult;
   indexStats(): string;
@@ -81,6 +84,34 @@ function toLocations(locs: NativeLocation[]): vscode.Location[] {
 /** All workspace folders (multi-root supported). */
 function workspaceRoots(): string[] {
   return (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+}
+
+/** Nearest project root (pom / build.gradle) for a folder clicked in Explorer. */
+function findReindexRoot(folder: string): string {
+  const roots = workspaceRoots();
+  const root = roots.find(
+    (r) => folder === r || folder.startsWith(r + path.sep)
+  );
+  if (!root) {
+    return folder;
+  }
+  let cur = folder;
+  while (true) {
+    for (const marker of ['pom.xml', 'build.gradle', 'build.gradle.kts']) {
+      if (fs.existsSync(path.join(cur, marker))) {
+        return cur;
+      }
+    }
+    if (cur === root) {
+      break;
+    }
+    const parent = path.dirname(cur);
+    if (parent === cur || !parent.startsWith(root)) {
+      break;
+    }
+    cur = parent;
+  }
+  return root;
 }
 
 function defaultDirection(): 'down' | 'up' | 'both' {
@@ -288,6 +319,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('springNav.reindex', async () => {
       await runIndex(true);
       outputChannel?.appendLine(`SpringNav: rebuilt — ${native.indexStats()}`);
+    })
+  );
+
+  // Explorer right-click on a folder: rebuild only that project.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('springNav.reindexFolder', async (uri?: vscode.Uri) => {
+      if (!uri) {
+        return;
+      }
+      const target = findReindexRoot(uri.fsPath);
+      if (!native.isJavaProject(target)) {
+        vscode.window.showWarningMessage(
+          'SpringNav: 该目录不是 Java 项目（未找到 pom.xml / build.gradle）'
+        );
+        return;
+      }
+      setIndexing();
+      try {
+        const r = native.reindexRoot(target);
+        setReady(r);
+        vscode.window.setStatusBarMessage(
+          `SpringNav: 已重建 ${path.basename(target)} 的索引（索引共 ${r.files} 文件 / ${r.modules} 模块）`,
+          3000
+        );
+        outputChannel?.appendLine(`SpringNav: reindexed root ${target}`);
+      } catch (err) {
+        setError();
+        outputChannel?.appendLine(`SpringNav: reindex root failed: ${String(err)}`);
+      }
     })
   );
 

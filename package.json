@@ -41,6 +41,10 @@
         "title": "SpringNav: 重新加载索引"
       },
       {
+        "command": "springNav.reindexFolder",
+        "title": "SpringNav: 重建此项目索引"
+      },
+      {
         "command": "springNav.goToImplementation",
         "title": "转到Java实现"
       },
@@ -50,6 +54,19 @@
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "springNav.reindexFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "springnav@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "springNav.reindexFolder",
+          "when": "false"
+        }
+      ],
       "editor/context": [
         {
           "command": "springNav.goToImplementation",

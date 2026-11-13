@@ -331,6 +331,45 @@ pub fn reload_config() -> BuildResult {
     res
 }
 
+/// Rebuild one project root only: drop its files, rescan that subtree, keep the
+/// rest of the workspace index intact.
+#[napi]
+pub fn reindex_root(root: String) -> BuildResult {
+    let mut g = match state().write() {
+        Ok(v) => v,
+        Err(_) => return BuildResult::default(),
+    };
+    let roots = g.index.roots.clone();
+    let project_count = g.index.project_count;
+    let cfg = g.config.clone();
+    let rn = scanner::normalize_path(&root);
+
+    let mut files = std::mem::take(&mut g.index.files);
+    files.retain(|f| {
+        let p = f.path.replace('\\', "/");
+        !(p == rn || p.starts_with(&format!("{}/", rn)))
+    });
+    if scanner::is_java_project(&rn) {
+        for c in scanner::collect(&rn) {
+            let parsed = if c.is_xml {
+                parser::parse_xml(&c)
+            } else {
+                parser::parse_java(&c)
+            };
+            if let Some(m) = parsed {
+                files.push(m);
+            }
+        }
+    }
+
+    let gen = GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut st = index::build_index_from_files(files, &cfg, roots, project_count);
+    st.gen = gen;
+    let res = build_result(&st);
+    *g = st;
+    res
+}
+
 /// Current counters without rebuilding (status bar refresh).
 #[napi]
 pub fn get_status() -> BuildResult {
