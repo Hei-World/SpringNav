@@ -44,6 +44,7 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 | J-07 | `this::method` 方法引用跳转（单重载精准，多重载返回列表） |
 | J-08 | 重载处理：索引键含方法名 + 参数类型；命中多个返回列表 |
 | J-09 | 继承链查找：当前类找不到时沿 `extends`/`implements` 上溯 |
+| L-01 | Lombok：`@Data`/`@Getter`/`@Setter`/`@Value`（类级或字段级）合成 getter/setter，`getXxx()`/`isXxx()`/`setXxx()` → 实体字段 |
 | S-01 | `springNav.searchByPath`：实时搜索列表，输入即过滤；显示 `路径 + (文件名) + [HTTP方法] + 模块` |
 | S-02 | 路径索引：拼接类级 + 方法级 `@RequestMapping`/`@GetMapping` 等注解为完整 URL |
 | M-01 | 多结果返回 `Location[]`，VS Code peek 列表选择 |
@@ -253,12 +254,12 @@ npm run package     # 把上面所有 .node 一起打进 spring-nav-<version>.vs
 ## 测试
 
 ```bash
-node scripts/smoke.js                       # 合成最小 SpringBoot 工程，27 项断言
+node scripts/smoke.js                       # 合成最小 SpringBoot 工程，32 项断言（含 Lombok）
 node test/harness.js /path/to/RuoYi-Vue     # 真实开源项目端到端断言（26 项）
 ```
 
 `smoke.js` 自建一个 Controller/Service/Impl/Mapper/XML/Entity 齐全的临时工程；`harness.js` 对 [RuoYi-Vue](https://github.com/yangzongzhuan/RuoYi-Vue) 验证
-Controller → Service → Impl → Mapper → XML 双向链、**向下/向上与回退**、实体字段 ↔ get/set、**实时路径命中的文件名/HTTP 方法/模块名**、重载/继承、配置热加载与增量更新。两者都直接加载 `.node`，不依赖 VS Code。
+Controller → Service → Impl → Mapper → XML 双向链、**向下/向上与回退**、实体字段 ↔ get/set、**Lombok 合成访问器**、**实时路径命中的文件名/HTTP 方法/模块名**、重载/继承、配置热加载与增量更新。两者都直接加载 `.node`，不依赖 VS Code。
 
 ---
 
@@ -277,6 +278,7 @@ Controller → Service → Impl → Mapper → XML 双向链、**向下/向上�
 | `screenshots/07-up-service-to-controller-peek.png` | 接口 → 控制器（向上，多结果 Peek 列表） |
 | `screenshots/08-entity-getter-to-field.png` | `getXX` → 实体字段（向下，直接跳转） |
 | `screenshots/09-entity-field-to-accessors.png` | 字段 → get/set（向上，Peek 列表） |
+| `screenshots/15-lombok-getter-to-field.png` | Lombok `@Data`：`getUserName()` → 实体字段（向下） |
 | `screenshots/10-context-menu.png` | 右键菜单：`转到Java实现` / `转到Java引用` |
 | `screenshots/11-context-menu-jump.png` | 右键「转到Java实现」实际跳转到字段 |
 | `screenshots/12-search-empty.png` | 路径搜索打开时列表为空 |
@@ -293,7 +295,8 @@ Controller → Service → Impl → Mapper → XML 双向链、**向下/向上�
 - **与 Red Hat Java 共存**：两个 Provider 的结果可能合并展示，本插件不负责过滤其它 Provider 的结果。
 - **非标准写法**：不保证准确；解析器面向常见 SpringBoot 写法，不处理所有边界语法。
 - 不做语法高亮、代码补全、错误诊断、重构、格式化；**不替代 Red Hat Java**。
-- `this::method` 仅在单重载时精准；Lombok `@Data` 等生成的方法源码里不存在，不会产生跳转目标。
+- `this::method` 仅在单重载时精准。
+- **Lombok**：支持类级/字段级 `@Data`、`@Getter`、`@Setter`、`@Value` 的 getter/setter 合成，`entity.getXxx()` / `isXxx()` / `setXxx()` 会跳到实体字段。限制：`@Accessors(fluent = true)` 这类改名的写法、以及生成的构造器 / `equals` / `toString` 不参与导航；类里已有同名显式方法时以显式方法为准；`static` 字段不生成访问器，`final` 字段不生成 setter。
 - **鼠标组合手势**：VS Code 未把「鼠标点击 + 修饰键」开放给扩展 API，`Cmd/Ctrl+Option+Click` 之类无法绑定；只有内置 `Ctrl/Cmd+Click` 可用（已用作向下），向上请用 `F12` 或自定义快捷键。
 
 ---

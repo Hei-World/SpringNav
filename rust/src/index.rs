@@ -19,6 +19,8 @@ pub struct Index {
     pub interface_impls: HashMap<String, Vec<usize>>,
     /// (file idx, method name) -> method indices (overloads)
     pub method_index: HashMap<(usize, String), Vec<usize>>,
+    /// Lombok-synthesized accessors: (file idx, accessor name) -> (field loc, param count)
+    pub lombok: HashMap<(usize, String), (Loc, usize)>,
     /// full URL -> indices into `path_entries`
     pub path_index: HashMap<String, Vec<usize>>,
     pub path_entries: Vec<PathEntry>,
@@ -49,6 +51,7 @@ impl Index {
             by_fqcn: HashMap::new(),
             interface_impls: HashMap::new(),
             method_index: HashMap::new(),
+            lombok: HashMap::new(),
             path_index: HashMap::new(),
             path_entries: Vec::new(),
             xml_index: HashMap::new(),
@@ -324,6 +327,107 @@ fn find_impls(index: &Index, si: usize, cfg: &Config) -> Vec<usize> {
         }
     }
     out
+}
+
+/// Detect Lombok class-level accessor generation.
+fn lombok_modes(m: &FileModel) -> (bool, bool) {
+    let mut getter = false;
+    let mut setter = false;
+    for a in &m.class_annotations {
+        match a.name.as_str() {
+            "Data" => {
+                getter = true;
+                setter = true;
+            }
+            "Getter" => getter = true,
+            "Setter" => setter = true,
+            // Lombok @Value: getters only; ignore Spring's @Value("${...}").
+            "Value" if !a.raw.contains("${") => getter = true,
+            _ => {}
+        }
+    }
+    (getter, setter)
+}
+
+/// Synthesize Lombok accessors so `entity.getXxx()` resolves to the field.
+/// Only names without an explicit method are added; static fields get nothing,
+/// final fields get no setter.
+fn build_lombok(index: &mut Index) {
+    let mut entries: Vec<((usize, String), (Loc, usize))> = Vec::new();
+    for (fi, m) in index.files.iter().enumerate() {
+        let (class_getter, class_setter) = lombok_modes(m);
+        if !class_getter && !class_setter {
+            continue;
+        }
+        for f in &m.fields {
+            if f.is_static || f.name == "serialVersionUID" {
+                continue;
+            }
+            let getter = class_getter || f.annotations.iter().any(|a| a == "Getter");
+            let setter = class_setter || f.annotations.iter().any(|a| a == "Setter");
+            let cap = capitalize(&f.name);
+            if getter {
+                let g = format!("get{}", cap);
+                if index.method_index.get(&(fi, g.clone())).is_none() {
+                    entries.push(((fi, g), (f.loc.clone(), 0)));
+                }
+                // Lombok uses isXxx only for primitive boolean fields.
+                if f.type_simple == "boolean" {
+                    let ig = format!("is{}", cap);
+                    if index.method_index.get(&(fi, ig.clone())).is_none() {
+                        entries.push(((fi, ig), (f.loc.clone(), 0)));
+                    }
+                }
+            }
+            if setter && !f.is_final {
+                let s = format!("set{}", cap);
+                if index.method_index.get(&(fi, s.clone())).is_none() {
+                    entries.push(((fi, s), (f.loc.clone(), 1)));
+                }
+            }
+        }
+    }
+    for (k, v) in entries {
+        index.lombok.insert(k, v);
+    }
+}
+
+/// Resolve a Lombok-generated accessor to its field location (walks supers too).
+pub(crate) fn find_lombok(
+    index: &Index,
+    start: &[usize],
+    name: &str,
+    arg_count: Option<usize>,
+) -> Vec<Loc> {
+    let mut visited: HashSet<usize> = HashSet::new();
+    let mut level: Vec<usize> = start.to_vec();
+    for _ in 0..8 {
+        if level.is_empty() {
+            break;
+        }
+        let mut out = Vec::new();
+        let mut next = Vec::new();
+        for fi in level {
+            if !visited.insert(fi) {
+                continue;
+            }
+            if let Some((loc, argc)) = index.lombok.get(&(fi, name.to_string())) {
+                if arg_count.map_or(true, |n| n == *argc) {
+                    out.push(loc.clone());
+                }
+            }
+            for s in &index.files[fi].supers {
+                for si in resolve_type_files(index, s) {
+                    next.push(si);
+                }
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+        level = next;
+    }
+    Vec::new()
 }
 
 fn common_prefix(a: &str, b: &str) -> usize {
@@ -607,7 +711,15 @@ fn build_edges(index: &mut Index, cfg: &Config) {
             if tfiles.is_empty() {
                 continue;
             }
-            let targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
+            let mut targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
+            let mut from_lombok = false;
+            if targets.is_empty() {
+                let lt = find_lombok(index, &tfiles, &cs.method, Some(cs.arg_count));
+                if !lt.is_empty() {
+                    targets = lt;
+                    from_lombok = true;
+                }
+            }
             if targets.is_empty() {
                 continue;
             }
@@ -617,8 +729,10 @@ fn build_edges(index: &mut Index, cfg: &Config) {
             for tm in &targets {
                 add_alias(index, cs.loc.clone(), tm.clone());
                 if let Some(ol) = &owner_loc {
-                    // Controller method -> Service method, ServiceImpl -> Mapper: down.
-                    add_edge_dir(index, ol.clone(), tm.clone());
+                    if !from_lombok {
+                        // Controller method -> Service method, ServiceImpl -> Mapper: down.
+                        add_edge_dir(index, ol.clone(), tm.clone());
+                    }
                 }
             }
         }
@@ -727,7 +841,11 @@ fn build_edges(index: &mut Index, cfg: &Config) {
     for fi in 0..n {
         let refs = index.files[fi].method_refs.clone();
         for mr in refs {
-            for m in find_methods(index, &[fi], &mr.name, None) {
+            let mut ms = find_methods(index, &[fi], &mr.name, None);
+            if ms.is_empty() {
+                ms = find_lombok(index, &[fi], &mr.name, None);
+            }
+            for m in ms {
                 add_alias(index, mr.loc.clone(), m);
             }
         }
@@ -785,6 +903,7 @@ pub fn build_index_from_files(mut files: Vec<FileModel>, cfg: &Config, root: Str
     let mut index = Index::blank(root);
     index.files = files;
     build_maps(&mut index);
+    build_lombok(&mut index);
     register_spans(&mut index);
     build_edges(&mut index, cfg);
     finalize(&mut index);

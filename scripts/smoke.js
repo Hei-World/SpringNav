@@ -159,6 +159,47 @@ public class User {
 `
 );
 
+// Lombok: getters/setters are generated at compile time, not present in source.
+write(
+  'src/main/java/com/example/domain/UserDto.java',
+  `package com.example.domain;
+
+import lombok.Data;
+
+@Data
+public class UserDto {
+    private Long id;
+    private String name;
+    private boolean enabled;
+    private static final long serialVersionUID = 1L;
+    private final String code = "x";
+
+    public Long getId() { return id; }
+}
+`
+);
+
+write(
+  'src/main/java/com/example/controller/DtoController.java',
+  `package com.example.controller;
+
+import com.example.domain.UserDto;
+
+public class DtoController {
+    private UserDto userDto;
+
+    public void run() {
+        userDto.getId();
+        userDto.getName();
+        userDto.setName("n");
+        userDto.isEnabled();
+        userDto.getSerialVersionUID();
+        userDto.setCode("c");
+    }
+}
+`
+);
+
 // Position of the first occurrence of `needle` (+ offset) in a file.
 function pos(rel, needle, offset = 0) {
   const lines = fs.readFileSync(path.join(root, rel), 'utf8').split('\n');
@@ -214,6 +255,8 @@ function check(name, fn) {
   const xml = 'src/main/resources/mapper/UserMapper.xml';
   const ctrl = base + 'controller/UserController.java';
   const entity = base + 'domain/User.java';
+  const dto = base + 'domain/UserDto.java';
+  const dtoCtrl = base + 'controller/DtoController.java';
 
   check('J-01 Controller call -> Service interface', () => {
     const { out } = resolve(ctrl, 'getInfo(id)');
@@ -369,6 +412,44 @@ function check(name, fn) {
     const out = resolveDir(entity, 'getId()', 'down');
     if (out.length !== 1) throw new Error('expected exactly 1, got ' + out.length);
     if (!hasLine(out, entity, f.line)) throw new Error('not the field');
+    return 'ok';
+  });
+
+  check('L-01 Lombok @Data: getName() -> field', () => {
+    const f = pos(dto, 'private String name;');
+    const out = resolveDir(dtoCtrl, 'getName()', 'down');
+    if (!hasLine(out, dto, f.line)) throw new Error('not field line ' + f.line);
+    return 'ok';
+  });
+
+  check('L-02 Lombok @Data: setName() -> field', () => {
+    const f = pos(dto, 'private String name;');
+    const out = resolveDir(dtoCtrl, 'setName("n")', 'down');
+    if (!hasLine(out, dto, f.line)) throw new Error('not field line');
+    return 'ok';
+  });
+
+  check('L-03 Lombok @Data: isEnabled() -> boolean field', () => {
+    const f = pos(dto, 'private boolean enabled;');
+    const out = resolveDir(dtoCtrl, 'isEnabled()', 'down');
+    if (!hasLine(out, dto, f.line)) throw new Error('not boolean field line');
+    return 'ok';
+  });
+
+  check('L-04 explicit method wins over Lombok synthetic', () => {
+    const m = pos(dto, 'public Long getId()');
+    const f = pos(dto, 'private Long id;');
+    const out = resolveDir(dtoCtrl, 'getId()', 'down');
+    if (!hasLine(out, dto, m.line)) throw new Error('not explicit method line');
+    if (hasLine(out, dto, f.line)) throw new Error('unexpectedly resolved to field');
+    return 'ok';
+  });
+
+  check('L-05 static/final fields get no synthesized accessor', () => {
+    const a = resolveDir(dtoCtrl, 'getSerialVersionUID()', 'down');
+    const b = resolveDir(dtoCtrl, 'setCode("c")', 'down');
+    if (a.length !== 0) throw new Error('static field should have no getter');
+    if (b.length !== 0) throw new Error('final field should have no setter');
     return 'ok';
   });
 

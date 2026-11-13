@@ -2,7 +2,7 @@
 
 use crate::config::Config;
 use crate::index::{
-    find_methods, normalize_url_path, resolve_field_type, resolve_type_files, Index,
+    find_lombok, find_methods, normalize_url_path, resolve_field_type, resolve_type_files, Index,
 };
 use crate::model::*;
 use regex::Regex;
@@ -91,7 +91,11 @@ fn fallback_targets(
     for caps in RE_FALLBACK_REF.captures_iter(snippet) {
         let name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
         if !name.is_empty() {
-            out.extend(find_methods(index, &[fi], name, None));
+            let mut ms = find_methods(index, &[fi], name, None);
+            if ms.is_empty() {
+                ms = find_lombok(index, &[fi], name, None);
+            }
+            out.extend(ms);
         }
     }
     for caps in RE_FALLBACK_CALL.captures_iter(snippet) {
@@ -103,7 +107,11 @@ fn fallback_targets(
         if let Some(t) = resolve_field_type(index, fi, field, cfg) {
             let tfiles = resolve_type_files(index, &t);
             if !tfiles.is_empty() {
-                out.extend(find_methods(index, &tfiles, method, None));
+                let mut ms = find_methods(index, &tfiles, method, None);
+                if ms.is_empty() {
+                    ms = find_lombok(index, &tfiles, method, None);
+                }
+                out.extend(ms);
             }
         }
     }

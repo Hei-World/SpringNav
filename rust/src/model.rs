@@ -70,6 +70,10 @@ pub struct FieldDecl {
     pub name: String,
     pub type_simple: String,
     pub loc: Loc,
+    pub is_static: bool,
+    pub is_final: bool,
+    /// Field-level annotation simple names (e.g. @Getter / @Setter).
+    pub annotations: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]

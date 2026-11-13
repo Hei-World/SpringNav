@@ -453,6 +453,9 @@ fn try_field_decl(line: &str, line_no: u32, uri: &str) -> Option<FieldDecl> {
         name: name.to_string(),
         type_simple,
         loc: Loc::new(uri, line_no, col(line, byte)),
+        is_static: words.iter().any(|w| *w == "static"),
+        is_final: words.iter().any(|w| *w == "final"),
+        annotations: Vec::new(),
     })
 }
 
@@ -624,7 +627,8 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             continue;
         }
 
-        if let Some(f) = try_field_decl(line, i as u32, &c.uri) {
+        if let Some(mut f) = try_field_decl(line, i as u32, &c.uri) {
+            f.annotations = pending.iter().map(|a| a.name.clone()).collect();
             model.fields.push(f);
             pending.clear();
             scan_method_refs(line, i as u32, &c.uri, &mut model);
