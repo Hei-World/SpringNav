@@ -134,6 +134,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [package]
     runs-on: ubuntu-latest
+    # 仓库 Workflow permissions 默认只读时，job 级显式声明才可靠生效
+    permissions:
+      contents: write
     steps:
       - name: Download VSIX
         uses: actions/download-artifact@v4
