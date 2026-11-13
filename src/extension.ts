@@ -64,21 +64,61 @@ interface SpringNavNative {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-// Defensive loading: a platform-mismatched or missing native binary must
-// NEVER throw at module scope — that crashes the extension host on every
-// activation and turns into a restart loop. Instead, degrade gracefully.
+// The native module is loaded LAZILY inside activate(), guarded by a
+// child-process preflight: dlopen of a corrupt/quarantined/wrong-arch binary
+// can HARD-ABORT the process (uncatchable in JS). Loading it inside the
+// extension host would kill the host on every activation -> restart loop.
+// The preflight dies instead; the host survives and reports the error.
 let native: SpringNavNative;
 let nativeLoadError: string | undefined;
-try {
-  native = require('../native');
-} catch (err) {
-  nativeLoadError = String(err instanceof Error ? err.message : err);
-  native = new Proxy({} as SpringNavNative, {
+
+function nativeProxy(reason: string): SpringNavNative {
+  return new Proxy({} as SpringNavNative, {
     get() {
-      throw new Error(
-        `SpringNav native module unavailable: ${nativeLoadError ?? 'unknown error'}`
-      );
+      throw new Error(`SpringNav native module unavailable: ${reason}`);
     },
+  });
+}
+
+/// Try loading the native addon in a throwaway Node child process.
+/// dyld aborts (quarantine / bad signature / wrong arch) kill the CHILD,
+/// never the extension host.
+function preflightNative(extensionPath: string): Promise<{ ok: boolean; error?: string }> {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { spawn } = require('child_process') as typeof import('child_process');
+  return new Promise((resolve) => {
+    const script =
+      `try{require(${JSON.stringify(require('path').join(extensionPath, 'native'))});` +
+      `process.exit(0)}catch(e){console.error(String(e && e.message || e));process.exit(1)}`;
+    let child;
+    try {
+      child = spawn(process.execPath, ['-e', script], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        timeout: 20000,
+      });
+    } catch (e) {
+      resolve({ ok: false, error: `preflight spawn failed: ${String(e)}` });
+      return;
+    }
+    let err = '';
+    child.stderr?.on('data', (d) => {
+      err += String(d);
+    });
+    child.on('close', (code, signal) => {
+      if (code === 0) {
+        resolve({ ok: true });
+      } else {
+        resolve({
+          ok: false,
+          error:
+            `preflight load failed (exit=${code}${signal ? ` signal=${signal}` : ''}) ` +
+            err.split('\n').slice(-4).join(' | ').slice(0, 500),
+        });
+      }
+    });
+    child.on('error', (e) => {
+      resolve({ ok: false, error: `preflight spawn error: ${String(e)}` });
+    });
   });
 }
 
@@ -299,24 +339,19 @@ function toPathItems(hits: NativePathHit[]): PathItem[] {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const roots = workspaceRoots();
-  if (roots.length === 0) {
-    return;
-  }
-  // F-01: activationEvents already used workspaceContains; re-validate here.
-  if (!roots.some((r) => native.isJavaProject(r))) {
-    return;
-  }
-
   outputChannel = vscode.window.createOutputChannel('SpringNav');
-  if (nativeLoadError) {
-    // Wrong-platform binary / missing build: show one clear error, keep the
-    // extension host alive. No providers, no indexing.
+  const version = context.extension.packageJSON.version as string;
+
+  // 1) Child-process preflight: never dlopen a possibly-fatal binary in-host.
+  const pf = await preflightNative(context.extensionPath);
+  if (!pf.ok) {
+    nativeLoadError = pf.error;
+    native = nativeProxy(nativeLoadError ?? 'preflight failed');
     const msg = messages();
     const diag =
-      `platform=${process.platform} arch=${process.arch} version=${context.extension.packageJSON.version} | ` +
+      `platform=${process.platform} arch=${process.arch} version=${version} | ` +
       nativeLoadError +
-      ' | fix: run `npm run build:native` on this machine, or `xattr -cr <extension dir>` if quarantined';
+      ' | fix: `npm run build:native` on this machine, or `xattr -cr <extension dir>` if quarantined';
     outputChannel.appendLine(`SpringNav: native load FAILED — ${diag}`);
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBar.text = msg.error;
@@ -325,6 +360,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     statusBar.show();
     context.subscriptions.push(statusBar);
     void vscode.window.showErrorMessage(msg.error + ' — ' + diag);
+    return;
+  }
+
+  // 2) Preflight passed; load in-host (JS-level errors still caught).
+  try {
+    native = require('../native');
+  } catch (err) {
+    nativeLoadError = String(err instanceof Error ? err.message : err);
+    native = nativeProxy(nativeLoadError);
+    outputChannel.appendLine(`SpringNav: native load FAILED — ${nativeLoadError}`);
+    void vscode.window.showErrorMessage(`SpringNav: ${nativeLoadError}`);
+    return;
+  }
+
+  const roots = workspaceRoots();
+  if (roots.length === 0) {
+    return;
+  }
+  // F-01: activationEvents already used workspaceContains; re-validate here.
+  if (!roots.some((r) => native.isJavaProject(r))) {
     return;
   }
   context.subscriptions.push(outputChannel);
@@ -341,7 +396,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Log the exact build being loaded — stale-version residue is a common
   // "still broken" misdiagnosis after reinstalling.
   outputChannel?.appendLine(
-    `SpringNav: v${context.extension.packageJSON.version} (${process.platform}-${process.arch}) ${messages().activation}`
+    `SpringNav: v${version ?? '?'} (${process.platform}-${process.arch}) ${messages().activation}`
   );
   outputChannel?.appendLine(`SpringNav: language = ${language()}`);
 
