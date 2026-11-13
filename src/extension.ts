@@ -313,14 +313,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Wrong-platform binary / missing build: show one clear error, keep the
     // extension host alive. No providers, no indexing.
     const msg = messages();
-    outputChannel.appendLine(`SpringNav: native load FAILED — ${nativeLoadError}`);
+    const diag =
+      `platform=${process.platform} arch=${process.arch} version=${context.extension.packageJSON.version} | ` +
+      nativeLoadError +
+      ' | fix: run `npm run build:native` on this machine, or `xattr -cr <extension dir>` if quarantined';
+    outputChannel.appendLine(`SpringNav: native load FAILED — ${diag}`);
     statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBar.text = msg.error;
-    statusBar.tooltip = nativeLoadError;
+    statusBar.tooltip = diag;
     statusBar.command = 'springNav.reindex';
     statusBar.show();
     context.subscriptions.push(statusBar);
-    void vscode.window.showErrorMessage(msg.error + ' — ' + nativeLoadError);
+    void vscode.window.showErrorMessage(msg.error + ' — ' + diag);
     return;
   }
   context.subscriptions.push(outputChannel);
@@ -334,7 +338,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // F-02: lazy, asynchronous build. Activation does NOT wait for it.
   void runIndex(false);
-  outputChannel?.appendLine(messages().activation);
+  // Log the exact build being loaded — stale-version residue is a common
+  // "still broken" misdiagnosis after reinstalling.
+  outputChannel?.appendLine(
+    `SpringNav: v${context.extension.packageJSON.version} (${process.platform}-${process.arch}) ${messages().activation}`
+  );
   outputChannel?.appendLine(`SpringNav: language = ${language()}`);
 
   // Ctrl/Cmd+Click goes through Go to Definition -> this provider.
