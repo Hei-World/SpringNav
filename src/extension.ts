@@ -20,9 +20,17 @@ interface NativePathHit {
   character: number;
 }
 
+interface BuildResult {
+  files: number;
+  projects: number;
+  modules: number;
+  methods: number;
+  edges: number;
+}
+
 interface SpringNavNative {
   isJavaProject(root: string): boolean;
-  buildIndex(root: string): Promise<number>;
+  buildIndex(roots: string[]): Promise<BuildResult>;
   resolveDefinition(
     uri: string,
     line: number,
@@ -39,8 +47,10 @@ interface SpringNavNative {
   ): NativeLocation[];
   searchByPath(path: string): NativeLocation[];
   searchPathHits(query: string): NativePathHit[];
+  updateFiles(uris: string[]): BuildResult;
   updateFile(uri: string): void;
-  reloadConfig(): void;
+  reloadConfig(): BuildResult;
+  getStatus(): BuildResult;
   indexStats(): string;
   uriForPath(path: string): string;
 }
@@ -54,6 +64,10 @@ interface PathItem extends vscode.QuickPickItem {
 
 const JAVA_XML = [{ language: 'java' }, { language: 'xml' }];
 
+let statusBar: vscode.StatusBarItem | undefined;
+let outputChannel: vscode.OutputChannel | undefined;
+let buildSeq = 0;
+
 function toLocations(locs: NativeLocation[]): vscode.Location[] {
   return locs.map(
     (l) =>
@@ -64,8 +78,9 @@ function toLocations(locs: NativeLocation[]): vscode.Location[] {
   );
 }
 
-function workspaceRoot(): string | undefined {
-  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+/** All workspace folders (multi-root supported). */
+function workspaceRoots(): string[] {
+  return (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
 }
 
 function defaultDirection(): 'down' | 'up' | 'both' {
@@ -79,6 +94,67 @@ function fallbackOnEmpty(): boolean {
   return vscode.workspace
     .getConfiguration('springNav')
     .get<boolean>('fallbackOnEmpty', true);
+}
+
+function setIndexing(): void {
+  if (!statusBar) {
+    return;
+  }
+  statusBar.text = '$(sync~spin) SpringNav: 索引中…';
+  statusBar.tooltip = 'SpringNav 正在构建索引';
+  statusBar.show();
+}
+
+function setReady(r: BuildResult): void {
+  if (!statusBar) {
+    return;
+  }
+  statusBar.text = `$(database) SpringNav: ${r.files} 文件`;
+  statusBar.tooltip = new vscode.MarkdownString(
+    `**SpringNav 索引**\n\n- 项目：${r.projects}\n- 模块：${r.modules}\n- 文件：${r.files}\n- 方法：${r.methods}\n- 边：${r.edges}\n\n点击重新构建索引`
+  );
+  statusBar.show();
+}
+
+function setError(): void {
+  if (!statusBar) {
+    return;
+  }
+  statusBar.text = '$(error) SpringNav: 索引失败';
+  statusBar.tooltip = 'SpringNav 索引失败，点击重试';
+  statusBar.show();
+}
+
+/** Full rebuild across all workspace folders. */
+async function runIndex(notify: boolean): Promise<void> {
+  const roots = workspaceRoots();
+  if (roots.length === 0) {
+    return;
+  }
+  const seq = ++buildSeq;
+  setIndexing();
+  try {
+    const r = await native.buildIndex(roots);
+    if (seq !== buildSeq) {
+      return; // superseded by a newer rebuild
+    }
+    setReady(r);
+    outputChannel?.appendLine(
+      `SpringNav: indexed ${r.files} files, ${r.projects} projects, ${r.modules} modules, ${r.methods} methods, ${r.edges} edges`
+    );
+    if (notify) {
+      vscode.window.setStatusBarMessage(
+        `SpringNav: 索引完成（${r.projects} 项目 / ${r.modules} 模块 / ${r.files} 文件）`,
+        4000
+      );
+    }
+  } catch (err) {
+    if (seq !== buildSeq) {
+      return;
+    }
+    setError();
+    vscode.window.showErrorMessage(`SpringNav: 索引失败 - ${String(err)}`);
+  }
 }
 
 /** Resolve at the cursor with an explicit direction. */
@@ -155,32 +231,30 @@ function toPathItems(hits: NativePathHit[]): PathItem[] {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const root = workspaceRoot();
-  if (!root) {
+  const roots = workspaceRoots();
+  if (roots.length === 0) {
     return;
   }
   // F-01: activationEvents already used workspaceContains; re-validate here.
-  if (!native.isJavaProject(root)) {
+  if (!roots.some((r) => native.isJavaProject(r))) {
     return;
   }
 
-  const channel = vscode.window.createOutputChannel('SpringNav');
-  context.subscriptions.push(channel);
+  outputChannel = vscode.window.createOutputChannel('SpringNav');
+  context.subscriptions.push(outputChannel);
 
-  // F-02: lazy, asynchronous, off the extension host's main thread. Activation
-  // does NOT wait for the build; providers simply return empty until it lands.
-  void native
-    .buildIndex(root)
-    .then((count) => {
-      channel.appendLine(`SpringNav: indexed ${count} files — ${native.indexStats()}`);
-    })
-    .catch((err) => {
-      channel.appendLine(`SpringNav: index build failed: ${String(err)}`);
-    });
+  statusBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Left,
+    100
+  );
+  statusBar.command = 'springNav.reindex';
+  context.subscriptions.push(statusBar);
+
+  // F-02: lazy, asynchronous build. Activation does NOT wait for it.
+  void runIndex(false);
+  outputChannel?.appendLine('SpringNav: activation, indexing started');
 
   // Ctrl/Cmd+Click goes through Go to Definition -> this provider.
-  // Default direction comes from `springNav.defaultDirection` (default: down),
-  // with an automatic fallback to the opposite direction.
   context.subscriptions.push(
     vscode.languages.registerDefinitionProvider(JAVA_XML, {
       provideDefinition(document: vscode.TextDocument, position: vscode.Position) {
@@ -209,7 +283,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  // S-01: real-time interface path search (QuickPick filters as you type).
+  // Manual full rebuild (command + status bar click).
+  context.subscriptions.push(
+    vscode.commands.registerCommand('springNav.reindex', async () => {
+      await runIndex(true);
+      outputChannel?.appendLine(`SpringNav: rebuilt — ${native.indexStats()}`);
+    })
+  );
+
+  // S-01: real-time interface path search.
   context.subscriptions.push(
     vscode.commands.registerCommand('springNav.searchByPath', async () => {
       const qp = vscode.window.createQuickPick<PathItem>();
@@ -217,7 +299,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       qp.placeholder = '输入路径片段开始检索，例如 /system/user/list';
       qp.matchOnDescription = false;
       qp.matchOnDetail = false;
-      // No list until the user types something.
       qp.onDidChangeValue((value) => {
         qp.items = value.trim() ? toPathItems(native.searchPathHits(value)) : [];
       });
@@ -237,26 +318,70 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
-  // F-03: incremental update on save, only the saved file is re-parsed.
+  // F-03: incremental update on save. Debounced so a burst of saves triggers a
+  // single rebuild; Rust only re-parses the changed files (no disk re-scan).
+  const pending = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  context.subscriptions.push({
+    dispose: () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    },
+  });
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((doc: vscode.TextDocument) => {
-      if (doc.languageId === 'java' || doc.uri.fsPath.endsWith('.xml')) {
-        native.updateFile(doc.uri.toString());
+      if (!(doc.languageId === 'java' || doc.uri.fsPath.endsWith('.xml'))) {
+        return;
       }
+      pending.add(doc.uri.toString());
+      if (timer) {
+        clearTimeout(timer);
+      }
+      timer = setTimeout(() => {
+        timer = undefined;
+        const uris = [...pending];
+        pending.clear();
+        if (uris.length === 0) {
+          return;
+        }
+        try {
+          setIndexing();
+          const r = native.updateFiles(uris);
+          setReady(r);
+        } catch (err) {
+          setError();
+          outputChannel?.appendLine(`SpringNav: update failed: ${String(err)}`);
+        }
+      }, 250);
     })
   );
 
-  // C-04: config hot reload -> local in-memory index rebuild.
+  // C-04: config hot reload -> in-memory rebuild (no file re-read).
   const watcher = vscode.workspace.createFileSystemWatcher(
     '**/.idea/spring-nav.{toml,json}'
   );
-  const onConfigChange = () => native.reloadConfig();
+  const onConfigChange = () => {
+    try {
+      setReady(native.reloadConfig());
+    } catch {
+      setError();
+    }
+  };
   watcher.onDidChange(onConfigChange);
   watcher.onDidCreate(onConfigChange);
   watcher.onDidDelete(onConfigChange);
   context.subscriptions.push(watcher);
+
+  // Multi-root: rebuild when folders are added/removed at runtime.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      void runIndex(false);
+    })
+  );
 }
 
 export function deactivate(): void {
-  // Nothing to dispose beyond context.subscriptions.
+  statusBar?.dispose();
+  statusBar = undefined;
 }

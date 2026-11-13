@@ -11,7 +11,12 @@ mod scanner;
 use napi::bindgen_prelude::*;
 use napi::{Env, Result, Task};
 use napi_derive::napi;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
+
+/// Monotonic build generation (older builds must not overwrite newer ones).
+static GEN: AtomicU64 = AtomicU64::new(0);
 
 #[napi(object)]
 #[derive(Clone)]
@@ -44,13 +49,35 @@ pub struct PathHit {
     pub character: u32,
 }
 
+/// Index counters returned to the TS shell (status bar / logs).
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct BuildResult {
+    pub files: u32,
+    pub projects: u32,
+    pub modules: u32,
+    pub methods: u32,
+    pub edges: u32,
+}
+
 static STATE: OnceLock<RwLock<index::State>> = OnceLock::new();
 
 fn state() -> &'static RwLock<index::State> {
     STATE.get_or_init(|| RwLock::new(index::State::empty()))
 }
 
-/// F-01: re-validate that the workspace root really is a Java project.
+fn build_result(st: &index::State) -> BuildResult {
+    let i = &st.index;
+    BuildResult {
+        files: i.files.len() as u32,
+        projects: i.project_count as u32,
+        modules: i.module_count as u32,
+        methods: i.files.iter().map(|f| f.methods.len() as u32).sum(),
+        edges: i.edges.len() as u32,
+    }
+}
+
+/// F-01: re-validate that a workspace folder is (or contains) a Java project.
 #[napi]
 pub fn is_java_project(root: String) -> bool {
     scanner::is_java_project(&root)
@@ -63,46 +90,70 @@ pub fn uri_for_path(path: String) -> String {
 }
 
 pub struct BuildIndexTask {
-    root: String,
+    roots: Vec<String>,
+    gen: u64,
 }
 
 impl Task for BuildIndexTask {
-    type Output = u32;
-    type JsValue = u32;
+    /// (files, projects, modules, methods, edges)
+    type Output = (u32, u32, u32, u32, u32);
+    type JsValue = BuildResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let root = self.root.clone();
-        let cfg = config::Config::load(&root);
+        let roots = self.roots.clone();
+        let cfg = config::Config::load_multi(&roots);
+        // Multi-root + multi-module: nested roots are dropped, each project is
+        // scanned once from its top folder, files are deduped by path.
+        let (cands, projects, workspace_roots) = scanner::collect_multi(&roots);
         let mut files = Vec::new();
-        // F-02: lazy, off the JS thread (AsyncTask runs in the libuv pool).
-        if scanner::is_java_project(&root) {
-            for c in scanner::collect(&root) {
-                let parsed = if c.is_xml {
-                    parser::parse_xml(&c)
-                } else {
-                    parser::parse_java(&c)
-                };
-                if let Some(m) = parsed {
-                    files.push(m);
-                }
+        for c in cands {
+            let parsed = if c.is_xml {
+                parser::parse_xml(&c)
+            } else {
+                parser::parse_java(&c)
+            };
+            if let Some(m) = parsed {
+                files.push(m);
             }
         }
-        let st = index::build_index_from_files(files, &cfg, root);
-        let count = st.index.files.len() as u32;
+        let mut st = index::build_index_from_files(files, &cfg, workspace_roots, projects.len());
+        st.gen = self.gen;
+        let out = (
+            st.index.files.len() as u32,
+            st.index.project_count as u32,
+            st.index.module_count as u32,
+            st.index
+                .files
+                .iter()
+                .map(|f| f.methods.len() as u32)
+                .sum::<u32>(),
+            st.index.edges.len() as u32,
+        );
         if let Ok(mut g) = state().write() {
-            *g = st;
+            if st.gen >= g.gen {
+                *g = st;
+            }
         }
-        Ok(count)
+        Ok(out)
     }
 
     fn resolve(&mut self, _env: Env, out: Self::Output) -> Result<Self::JsValue> {
-        Ok(out)
+        Ok(BuildResult {
+            files: out.0,
+            projects: out.1,
+            modules: out.2,
+            methods: out.3,
+            edges: out.4,
+        })
     }
 }
 
+/// Build the index for all workspace folders. Async (libuv thread pool) so the
+/// extension host stays responsive.
 #[napi]
-pub fn build_index(root: String) -> AsyncTask<BuildIndexTask> {
-    AsyncTask::new(BuildIndexTask { root })
+pub fn build_index(roots: Vec<String>) -> AsyncTask<BuildIndexTask> {
+    let gen = GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    AsyncTask::new(BuildIndexTask { roots, gen })
 }
 
 /// P-05: TS passes (uri, line, character, current line text); Rust does all
@@ -186,62 +237,108 @@ pub fn search_by_path(path: String) -> Vec<Location> {
         .collect()
 }
 
-/// F-03: re-parse only the saved file, then recompute the in-memory index
-/// (no re-scan of other files, no query-time disk I/O).
-#[napi]
-pub fn update_file(uri: String) {
+/// Incremental update: re-parse only the given files, then recompute the
+/// derived index in memory (no disk re-scan, no other files re-read).
+fn do_update(uris: &[String]) -> BuildResult {
     let mut g = match state().write() {
         Ok(v) => v,
-        Err(_) => return,
+        Err(_) => return BuildResult::default(),
     };
-    let root = g.index.root.clone();
+    let roots = g.index.roots.clone();
+    let project_count = g.index.project_count;
     let cfg = g.config.clone();
-    let existing: Option<usize> = g.index.by_uri.get(&uri).copied();
-    let path = existing
-        .map(|i| g.index.files[i].path.clone())
-        .unwrap_or_else(|| scanner::uri_to_path(&uri));
-    let is_xml = path.ends_with(".xml");
-    let content = scanner::read_one(&path);
-    let c = scanner::Candidate {
-        path,
-        uri: uri.clone(),
-        content,
-        is_xml,
-    };
-    let parsed = if c.is_xml {
-        parser::parse_xml(&c)
-    } else {
-        parser::parse_java(&c)
-    };
     let mut files = std::mem::take(&mut g.index.files);
-    match (existing, parsed) {
-        (Some(i), Some(m)) => {
-            if i < files.len() {
-                files[i] = m;
-            }
-        }
-        (Some(i), None) => {
-            if i < files.len() {
-                files.remove(i);
-            }
-        }
-        (None, Some(m)) => files.push(m),
-        (None, None) => {}
+
+    let mut pos: HashMap<String, usize> = HashMap::new();
+    for (i, f) in files.iter().enumerate() {
+        pos.insert(f.uri.clone(), i);
     }
-    *g = index::build_index_from_files(files, &cfg, root);
+    let mut removed: Vec<usize> = Vec::new();
+    for uri in uris {
+        let existing = pos.get(uri).copied();
+        let path = existing
+            .map(|i| files[i].path.clone())
+            .unwrap_or_else(|| scanner::uri_to_path(uri));
+        let is_xml = path.ends_with(".xml");
+        let content = scanner::read_one(&path);
+        let c = scanner::Candidate {
+            path,
+            uri: uri.clone(),
+            content,
+            is_xml,
+        };
+        let parsed = if c.is_xml {
+            parser::parse_xml(&c)
+        } else {
+            parser::parse_java(&c)
+        };
+        match (existing, parsed) {
+            (Some(i), Some(m)) => {
+                if i < files.len() {
+                    files[i] = m;
+                }
+            }
+            (Some(i), None) => removed.push(i),
+            (None, Some(m)) => {
+                pos.insert(uri.clone(), files.len());
+                files.push(m);
+            }
+            (None, None) => {}
+        }
+    }
+    removed.sort_unstable();
+    removed.dedup();
+    for i in removed.into_iter().rev() {
+        files.remove(i);
+    }
+
+    let gen = GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut st = index::build_index_from_files(files, &cfg, roots, project_count);
+    st.gen = gen;
+    let res = build_result(&st);
+    *g = st;
+    res
+}
+
+/// Batch incremental update (one rebuild for N changed files).
+#[napi]
+pub fn update_files(uris: Vec<String>) -> BuildResult {
+    do_update(&uris)
+}
+
+/// Single-file update (kept for tests / simple callers).
+#[napi]
+pub fn update_file(uri: String) {
+    let _ = do_update(&[uri]);
 }
 
 /// C-04: reload config and rebuild relationships from cached parse models.
 #[napi]
-pub fn reload_config() {
+pub fn reload_config() -> BuildResult {
     let mut g = match state().write() {
         Ok(v) => v,
-        Err(_) => return,
+        Err(_) => return BuildResult::default(),
     };
-    let root = g.index.root.clone();
-    let cfg = config::Config::load(&root);
+    let roots = g.index.roots.clone();
+    let project_count = g.index.project_count;
+    let cfg = config::Config::load_multi(&roots);
     let files = std::mem::take(&mut g.index.files);
-    *g = index::build_index_from_files(files, &cfg, root);
+    let gen = GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut st = index::build_index_from_files(files, &cfg, roots, project_count);
+    st.gen = gen;
+    let res = build_result(&st);
+    *g = st;
+    res
+}
+
+/// Current counters without rebuilding (status bar refresh).
+#[napi]
+pub fn get_status() -> BuildResult {
+    let g = match state().read() {
+        Ok(v) => v,
+        Err(_) => return BuildResult::default(),
+    };
+    build_result(&g)
 }
 
 #[napi]
@@ -260,7 +357,10 @@ pub fn index_stats() -> String {
     let calls: usize = i.files.iter().map(|f| f.calls.len()).sum();
     let xml: usize = i.files.iter().map(|f| f.xml_stmts.len()).sum();
     format!(
-        "files={} java={} xml_stmts={} methods={} calls={} paths={} path_entries={} edges={} down={} up={} aliases={} spans={}",
+        "projects={} modules={} roots={} files={} java={} xml_stmts={} methods={} calls={} paths={} path_entries={} edges={} down={} up={} aliases={} spans={}",
+        i.project_count,
+        i.module_count,
+        i.roots.len(),
         i.files.len(),
         java,
         xml,

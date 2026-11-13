@@ -107,6 +107,59 @@ pub fn collect(root: &str) -> Vec<Candidate> {
     out
 }
 
+/// Collect across multiple workspace folders: drop nested roots, index each
+/// Java project once, dedupe files by path. A multi-module project is scanned
+/// from its top root once (sub-module pom.xml files are not separate projects).
+pub fn collect_multi(roots_in: &[String]) -> (Vec<Candidate>, Vec<String>, Vec<String>) {
+    let mut roots: Vec<String> = Vec::new();
+    for r in roots_in {
+        let nr = normalize_path(r);
+        if nr.is_empty() {
+            continue;
+        }
+        if roots.iter().any(|x| is_prefix(x, &nr)) {
+            continue; // already covered by a parent root
+        }
+        roots.retain(|x| !is_prefix(&nr, x)); // drop roots nested under this one
+        roots.push(nr);
+    }
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut projects = Vec::new();
+    for r in &roots {
+        if !is_java_project(r) {
+            continue;
+        }
+        projects.push(r.clone());
+        for c in collect(r) {
+            if seen.insert(c.path.clone()) {
+                out.push(c);
+            }
+        }
+    }
+    (out, projects, roots)
+}
+
+fn normalize_path(p: &str) -> String {
+    let mut s = p.replace('\\', "/");
+    while s.len() > 1 && s.ends_with('/') {
+        s.pop();
+    }
+    s
+}
+
+fn is_prefix(parent: &str, child: &str) -> bool {
+    if parent == child {
+        return true;
+    }
+    let mut p = parent.to_string();
+    if !p.ends_with('/') {
+        p.push('/');
+    }
+    child.starts_with(&p)
+}
+
 pub fn read_one(path: &str) -> String {
     String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).into_owned()
 }

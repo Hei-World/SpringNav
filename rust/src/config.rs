@@ -45,6 +45,24 @@ impl Config {
         Config::default()
     }
 
+    /// Merge configs from every workspace folder (earlier roots win).
+    pub fn load_multi(roots: &[String]) -> Config {
+        let mut out = Config::default();
+        for r in roots {
+            let c = Config::load(r);
+            for (k, v) in c.aliases {
+                out.aliases.entry(k).or_insert(v);
+            }
+            for (k, v) in c.type_roles {
+                out.type_roles.entry(k).or_insert(v);
+            }
+            for (k, v) in c.impl_patterns {
+                out.impl_patterns.entry(k).or_insert(v);
+            }
+        }
+        out
+    }
+
     pub fn role_override(&self, simple: &str, fqcn: &str) -> Option<Role> {
         self.type_roles
             .get(fqcn)

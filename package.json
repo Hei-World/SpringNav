@@ -37,6 +37,10 @@
         "title": "SpringNav: Search by URL path"
       },
       {
+        "command": "springNav.reindex",
+        "title": "SpringNav: 重新加载索引"
+      },
+      {
         "command": "springNav.goToImplementation",
         "title": "转到Java实现"
       },

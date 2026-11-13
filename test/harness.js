@@ -74,8 +74,8 @@ function has(out, rel) {
 (async () => {
   console.log('root:', root);
   console.log('isJavaProject:', addon.isJavaProject(root));
-  const count = await addon.buildIndex(root);
-  console.log('indexed files:', count);
+  const res = await addon.buildIndex([root]);
+  console.log('indexed:', JSON.stringify(res));
   console.log('stats:', addon.indexStats());
   console.log('');
 

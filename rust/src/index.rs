@@ -10,7 +10,12 @@ use std::collections::{HashMap, HashSet};
 const DEFAULT_IMPL_PATTERNS: &[&str] = &["*ServiceImpl", "*Impl"];
 
 pub struct Index {
-    pub root: String,
+    /// All indexed workspace folders (multi-root supported).
+    pub roots: Vec<String>,
+    /// Number of Java projects scanned (multi-module counts as one).
+    pub project_count: usize,
+    /// Number of distinct modules detected across all roots.
+    pub module_count: usize,
     pub files: Vec<FileModel>,
     pub by_uri: HashMap<String, usize>,
     pub by_simple: HashMap<String, Vec<usize>>,
@@ -39,12 +44,17 @@ pub struct Index {
 pub struct State {
     pub index: Index,
     pub config: Config,
+    /// Build generation: an older build finishing late must not overwrite a
+    /// newer one.
+    pub gen: u64,
 }
 
 impl Index {
-    pub fn blank(root: String) -> Index {
+    pub fn blank(roots: Vec<String>) -> Index {
         Index {
-            root,
+            roots,
+            project_count: 0,
+            module_count: 0,
             files: Vec::new(),
             by_uri: HashMap::new(),
             by_simple: HashMap::new(),
@@ -67,8 +77,9 @@ impl Index {
 impl State {
     pub fn empty() -> State {
         State {
-            index: Index::blank(String::new()),
+            index: Index::blank(Vec::new()),
             config: Config::default(),
+            gen: 0,
         }
     }
 }
@@ -511,15 +522,40 @@ fn add_alias(index: &mut Index, a: Loc, b: Loc) {
     index.up.entry(a).or_default().push(b);
 }
 
-/// Derive the Maven/Gradle module name from a file path.
-fn module_of(path: &str) -> String {
+/// Module name relative to the owning workspace root: `proj-a/mod-web`, or the
+/// project directory name for a single-module project.
+fn module_of(path: &str, roots: &[String]) -> String {
     let p = path.replace('\\', "/");
-    for marker in ["/src/main/java/", "/src/main/kotlin/", "/src/main/resources/", "/src/"] {
-        if let Some(i) = p.find(marker) {
-            return p[..i].rsplit('/').next().unwrap_or("").to_string();
+    let mut best: Option<String> = None;
+    for r in roots {
+        let rn = r.replace('\\', "/");
+        let rn = rn.trim_end_matches('/');
+        if p == rn || p.starts_with(&format!("{}/", rn)) {
+            if best.as_ref().map_or(true, |b| rn.len() > b.len()) {
+                best = Some(rn.to_string());
+            }
         }
     }
-    String::new()
+    let root = best.unwrap_or_default();
+    let rel = if root.is_empty() {
+        p.trim_start_matches('/').to_string()
+    } else {
+        p.strip_prefix(&root)
+            .unwrap_or(&p)
+            .trim_start_matches('/')
+            .to_string()
+    };
+    let cut = if rel.starts_with("src/") {
+        0
+    } else {
+        rel.find("/src/").unwrap_or(rel.len())
+    };
+    let m = rel[..cut].trim_matches('/').to_string();
+    if m.is_empty() {
+        root.rsplit('/').next().unwrap_or("").to_string()
+    } else {
+        m
+    }
 }
 
 fn push_path_entry(
@@ -584,7 +620,7 @@ fn build_maps(index: &mut Index) {
                     m.class_paths.clone()
                 };
                 let file = format!("{}.java", m.class_name);
-                let module = module_of(&m.path);
+                let module = module_of(&m.path, &index.roots);
                 for md in &m.methods {
                     if md.paths.is_empty() {
                         continue;
@@ -896,19 +932,35 @@ fn finalize(index: &mut Index) {
     }
 }
 
-pub fn build_index_from_files(mut files: Vec<FileModel>, cfg: &Config, root: String) -> State {
+pub fn build_index_from_files(
+    mut files: Vec<FileModel>,
+    cfg: &Config,
+    roots: Vec<String>,
+    project_count: usize,
+) -> State {
     for m in &mut files {
         m.role = classify(m, cfg);
     }
-    let mut index = Index::blank(root);
+    let mut index = Index::blank(roots);
+    index.project_count = project_count;
     index.files = files;
     build_maps(&mut index);
     build_lombok(&mut index);
     register_spans(&mut index);
     build_edges(&mut index, cfg);
     finalize(&mut index);
+
+    let mut mods: HashSet<String> = HashSet::new();
+    for m in &index.files {
+        if m.kind == FileKind::Java {
+            mods.insert(module_of(&m.path, &index.roots));
+        }
+    }
+    index.module_count = mods.len();
+
     State {
         index,
         config: cfg.clone(),
+        gen: 0,
     }
 }

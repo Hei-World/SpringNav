@@ -243,8 +243,8 @@ function check(name, fn) {
 
 (async () => {
   console.log('isJavaProject:', addon.isJavaProject(root));
-  const count = await addon.buildIndex(root);
-  console.log('indexed files:', count);
+  const res = await addon.buildIndex([root]);
+  console.log('indexed:', JSON.stringify(res));
   console.log('stats:', addon.indexStats());
 
   const base = 'src/main/java/com/example/';
@@ -492,9 +492,93 @@ function check(name, fn) {
     return 'ok';
   });
 
+  async function checkAsync(name, fn) {
+    try {
+      const info = await fn();
+      console.log(`  PASS  ${name}${info ? '  ' + info : ''}`);
+      results.push(true);
+    } catch (e) {
+      console.log(`  FAIL  ${name}: ${e.message}`);
+      results.push(false);
+    }
+  }
+
+  await checkAsync('UP-01 updateFiles is idempotent (no growth)', async () => {
+    const before = addon.getStatus();
+    const uri = addon.uriForPath(path.join(root, ctrl));
+    addon.updateFiles([uri]);
+    const r = addon.updateFiles([uri]);
+    if (r.files !== before.files) throw new Error(`files ${before.files} -> ${r.files}`);
+    if (r.methods !== before.methods) throw new Error(`methods ${before.methods} -> ${r.methods}`);
+    return `files=${r.files} methods=${r.methods}`;
+  });
+
+  await checkAsync('UP-02 updateFiles picks up a changed file', async () => {
+    const file = path.join(root, ctrl);
+    const before = addon.getStatus();
+    const orig = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(
+      file,
+      orig.replace('public void ping() {}', 'public void ping() {}\n\n    public void addedByTest() {}')
+    );
+    const r = addon.updateFiles([addon.uriForPath(file)]);
+    fs.writeFileSync(file, orig);
+    addon.updateFiles([addon.uriForPath(file)]);
+    if (r.methods !== before.methods + 1) throw new Error(`methods ${before.methods} -> ${r.methods}`);
+    return `methods ${before.methods} -> ${r.methods}`;
+  });
+
+  // ---- multi-root / multi-module ----
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'springnav-multi-'));
+  function wm(rel, content) {
+    const p = path.join(parent, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  }
+  wm('proj-a/pom.xml', '<project/>');
+  wm('proj-a/mod-core/pom.xml', '<project/>');
+  wm(
+    'proj-a/mod-core/src/main/java/a/core/CoreService.java',
+    'package a.core;\npublic class CoreService {\n    public void core() {}\n}\n'
+  );
+  wm('proj-a/mod-web/pom.xml', '<project/>');
+  wm(
+    'proj-a/mod-web/src/main/java/a/web/CoreController.java',
+    'package a.web;\nimport org.springframework.web.bind.annotation.*;\n@RestController\n@RequestMapping("/core")\npublic class CoreController {\n    @GetMapping("/list")\n    public void list() {}\n}\n'
+  );
+  wm('proj-b/pom.xml', '<project/>');
+  wm(
+    'proj-b/src/main/java/b/BController.java',
+    'package b;\nimport org.springframework.web.bind.annotation.*;\n@RestController\n@RequestMapping("/b")\npublic class BController {\n    @GetMapping("/x")\n    public void x() {}\n}\n'
+  );
+
+  await checkAsync('MR-01 multi-root: both projects indexed, modules correct', async () => {
+    const r = await addon.buildIndex([path.join(parent, 'proj-a'), path.join(parent, 'proj-b')]);
+    if (r.projects !== 2) throw new Error('projects=' + r.projects);
+    if (r.modules !== 3) throw new Error('modules=' + r.modules);
+    const core = addon.searchPathHits('/core/list');
+    if (!core.some((h) => h.module === 'mod-web')) {
+      throw new Error('mod-web missing: ' + JSON.stringify(core.map((h) => h.module)));
+    }
+    const b = addon.searchPathHits('/b/x');
+    if (!b.some((h) => h.module === 'proj-b')) {
+      throw new Error('proj-b missing: ' + JSON.stringify(b.map((h) => h.module)));
+    }
+    return `projects=${r.projects} modules=${r.modules} files=${r.files}`;
+  });
+
+  await checkAsync('MR-02 nested roots deduped (no double index)', async () => {
+    const one = await addon.buildIndex([parent]);
+    const two = await addon.buildIndex([parent, path.join(parent, 'proj-a')]);
+    if (one.files !== two.files) throw new Error(`files ${one.files} vs ${two.files}`);
+    if (two.projects !== 1) throw new Error('projects=' + two.projects);
+    return `files=${two.files} projects=${two.projects}`;
+  });
+
   const failed = results.filter((r) => !r).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed`);
   fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(parent, { recursive: true, force: true });
   process.exit(failed ? 1 : 0);
 })().catch((e) => {
   console.error('FATAL', e);

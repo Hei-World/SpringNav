@@ -34,7 +34,10 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 | --- | --- |
 | F-01 | Java 项目检测：工作区存在 `pom.xml` / `build.gradle` / `build.gradle.kts` 才激活 |
 | F-02 | 惰性异步索引构建，只解析 Controller / Service / ServiceImpl / Mapper / Entity / `*Mapper.xml` 相关文件 |
-| F-03 | 增量更新：监听保存事件，仅重新解析被保存的文件并在内存重算索引 |
+| F-03 | 增量更新：保存时只重新解析变更文件（250ms 防抖、批量合并），内存重建索引，不扫盘 |
+| F-04 | 手动重建：命令 `SpringNav: 重新加载索引`，或点击状态栏重建 |
+| F-05 | 状态栏：`索引中…` / `N 文件`，悬停显示项目/模块/方法/边数量 |
+| F-06 | 多根工作区 + 多模块项目：每个项目只扫描一次，嵌套根自动去重，子模块不单独建项目 |
 | J-01 | Controller 方法 ↔ Service 接口方法 |
 | J-02 | Service 接口方法 ↔ ServiceImpl 实现方法（多实现返回列表） |
 | J-03 | ServiceImpl 方法 ↔ Mapper 接口方法 |
@@ -57,6 +60,14 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 ### 用法
 
 打开一个 SpringBoot 工程（含 `pom.xml` 等），插件自动激活并异步建索引。输出通道 `SpringNav` 会打印索引统计。
+
+**索引与多项目：**
+
+- 左侧状态栏显示 `SpringNav: N 文件`；悬停可看项目/模块/方法/边数量。**点击状态栏**或执行命令面板的 `SpringNav: 重新加载索引` 可手动全量重建。
+- **多根工作区**：所有工作区文件夹都会索引；同一项目或嵌套的根只扫描一次，不会重复。
+- **多模块项目**：从项目根扫描一次（子模块 `pom.xml` 不会被当成独立项目），模块名显示为模块相对路径，如 `ruoyi-admin`、`proj-a/mod-web`。
+- **保存文件**：只重新解析被保存的 java/xml 文件（250ms 防抖、批量合并），索引在内存重建，不重新扫盘。
+- **外部修改**（`git pull`、其它编辑器改动）不会自动感知，请手动重建。
 
 #### 方向跳转（向下 / 向上）
 
@@ -254,7 +265,7 @@ npm run package     # 把上面所有 .node 一起打进 spring-nav-<version>.vs
 ## 测试
 
 ```bash
-node scripts/smoke.js                       # 合成最小 SpringBoot 工程，32 项断言（含 Lombok）
+node scripts/smoke.js                       # 合成工程，36 项断言（含 Lombok、多根、增量）
 node test/harness.js /path/to/RuoYi-Vue     # 真实开源项目端到端断言（26 项）
 ```
 
@@ -279,6 +290,10 @@ Controller → Service → Impl → Mapper → XML 双向链、**向下/向上�
 | `screenshots/08-entity-getter-to-field.png` | `getXX` → 实体字段（向下，直接跳转） |
 | `screenshots/09-entity-field-to-accessors.png` | 字段 → get/set（向上，Peek 列表） |
 | `screenshots/15-lombok-getter-to-field.png` | Lombok `@Data`：`getUserName()` → 实体字段（向下） |
+| `screenshots/16-status-bar.png` | 状态栏显示 `SpringNav: 150 文件` |
+| `screenshots/17-reindex-command.png` | 命令面板中的 `SpringNav: 重新加载索引` |
+| `screenshots/18-reindex-done.png` | 重建完成提示（1 项目 / 6 模块 / 150 文件） |
+| `screenshots/19-multiroot.png` | 多根工作区：2 项目 / 2 模块 / 3 文件 |
 | `screenshots/10-context-menu.png` | 右键菜单：`转到Java实现` / `转到Java引用` |
 | `screenshots/11-context-menu-jump.png` | 右键「转到Java实现」实际跳转到字段 |
 | `screenshots/12-search-empty.png` | 路径搜索打开时列表为空 |
@@ -298,6 +313,7 @@ Controller → Service → Impl → Mapper → XML 双向链、**向下/向上�
 - `this::method` 仅在单重载时精准。
 - **Lombok**：支持类级/字段级 `@Data`、`@Getter`、`@Setter`、`@Value` 的 getter/setter 合成，`entity.getXxx()` / `isXxx()` / `setXxx()` 会跳到实体字段。限制：`@Accessors(fluent = true)` 这类改名的写法、以及生成的构造器 / `equals` / `toString` 不参与导航；类里已有同名显式方法时以显式方法为准；`static` 字段不生成访问器，`final` 字段不生成 setter。
 - **鼠标组合手势**：VS Code 未把「鼠标点击 + 修饰键」开放给扩展 API，`Cmd/Ctrl+Option+Click` 之类无法绑定；只有内置 `Ctrl/Cmd+Click` 可用（已用作向下），向上请用 `F12` 或自定义快捷键。
+- **外部修改不自动感知**：不监听文件系统变化（按需求只提供手动入口）；`git pull`、其它编辑器修改后，点状态栏或执行 `SpringNav: 重新加载索引` 重建。
 
 ---
 
