@@ -78,7 +78,7 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 | 入口 | 行为 |
 | --- | --- |
 | `Ctrl` / `Cmd` + 鼠标左键点击（Go to Definition 转到 Java 定义） | **引用 → 定义**：方法调用→定义、get/set 调用→实体字段、常量/枚举引用→声明、`Cls::method` → 方法/字段、Mapper → XML、Service 接口 → 实现；该方向无匹配时自动**回退到转到引用** |
-| `F12`（转到 Java 引用） | **定义 → 引用**：方法声明→调用点、实体字段→get/set 与引用、常量→引用点、XML → Mapper、类 → 类型引用；无引用时自动**回退到转到定义** |
+| `F12`（转到 Java 定义） | **引用 → 定义**：方法调用→定义、get/set 调用→实体字段、Mapper → XML、Service 接口 → 实现；无定义时自动**回退到转到引用**（与原生 F12=Go to Definition 习惯一致） |
 | `Shift+F12` / 右键「查找所有引用」 | 原生 Go to References（已注册 ReferenceProvider），语义同「转到 Java 引用」，多结果以 peek 列表展示 |
 | 右键菜单 | 第一项「转到 Java 引用」，第二项「转到 Java 定义」 |
 
