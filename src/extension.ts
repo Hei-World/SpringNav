@@ -64,7 +64,23 @@ interface SpringNavNative {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const native: SpringNavNative = require('../native');
+// Defensive loading: a platform-mismatched or missing native binary must
+// NEVER throw at module scope — that crashes the extension host on every
+// activation and turns into a restart loop. Instead, degrade gracefully.
+let native: SpringNavNative;
+let nativeLoadError: string | undefined;
+try {
+  native = require('../native');
+} catch (err) {
+  nativeLoadError = String(err instanceof Error ? err.message : err);
+  native = new Proxy({} as SpringNavNative, {
+    get() {
+      throw new Error(
+        `SpringNav native module unavailable: ${nativeLoadError ?? 'unknown error'}`
+      );
+    },
+  });
+}
 
 interface PathItem extends vscode.QuickPickItem {
   target: vscode.Location;
@@ -293,6 +309,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   outputChannel = vscode.window.createOutputChannel('SpringNav');
+  if (nativeLoadError) {
+    // Wrong-platform binary / missing build: show one clear error, keep the
+    // extension host alive. No providers, no indexing.
+    const msg = messages();
+    outputChannel.appendLine(`SpringNav: native load FAILED — ${nativeLoadError}`);
+    statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusBar.text = msg.error;
+    statusBar.tooltip = nativeLoadError;
+    statusBar.command = 'springNav.reindex';
+    statusBar.show();
+    context.subscriptions.push(statusBar);
+    void vscode.window.showErrorMessage(msg.error + ' — ' + nativeLoadError);
+    return;
+  }
   context.subscriptions.push(outputChannel);
 
   statusBar = vscode.window.createStatusBarItem(
