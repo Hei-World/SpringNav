@@ -84,6 +84,30 @@ fn build_result(st: &index::State) -> BuildResult {
 }
 
 /// Parse one candidate, counting a "relevant but failed" file as parse_failed.
+/// Panic containment: panics must NEVER unwind through the libuv/FFI
+/// boundary (that aborts the whole extension host). Every napi entry point
+/// and the async build task run behind catch_unwind; the panic message is
+/// recorded so the user can report it and the root cause gets fixed.
+static LAST_PANIC: std::sync::LazyLock<std::sync::Mutex<String>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(String::new()));
+
+fn record_panic(where_: &str, p: Box<dyn std::any::Any + Send>) {
+    let msg = p
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string());
+    let text = format!("{}: {}", where_, msg);
+    eprintln!("SpringNav PANIC ({})", text);
+    if let Ok(mut g) = LAST_PANIC.lock() {
+        *g = text;
+    }
+}
+
+fn last_panic_text() -> String {
+    LAST_PANIC.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
 fn parse_candidate(c: &scanner::Candidate, failed: &mut u32) -> Option<model::FileModel> {
     if c.is_xml {
         let parsed = parser::parse_xml(c);
@@ -129,6 +153,38 @@ impl Task for BuildIndexTask {
     type JsValue = BuildResult;
 
     fn compute(&mut self) -> Result<Self::Output> {
+        // Panics must not unwind across the libuv thread boundary (process
+        // abort). Contain them and surface as a rejected task.
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.compute_inner()
+        }));
+        match out {
+            Ok(r) => r,
+            Err(p) => {
+                record_panic("buildIndex", p);
+                Err(napi::Error::new(
+                    napi::Status::GenericFailure,
+                    format!("SpringNav buildIndex panicked — {}", last_panic_text()),
+                ))
+            }
+        }
+    }
+
+    fn resolve(&mut self, _env: Env, out: Self::Output) -> Result<Self::JsValue> {
+        Ok(BuildResult {
+            files: out.0,
+            projects: out.1,
+            modules: out.2,
+            methods: out.3,
+            edges: out.4,
+            skipped: out.5,
+            failed: out.6,
+        })
+    }
+}
+
+impl BuildIndexTask {
+    fn compute_inner(&mut self) -> Result<(u32, u32, u32, u32, u32, u32, u32)> {
         let roots = self.roots.clone();
         let scan = scanner::scan_workspace(&roots);
         // Config comes from the ACTUAL project roots, so a config placed in a
@@ -192,18 +248,6 @@ impl Task for BuildIndexTask {
         }
         Ok(out)
     }
-
-    fn resolve(&mut self, _env: Env, out: Self::Output) -> Result<Self::JsValue> {
-        Ok(BuildResult {
-            files: out.0,
-            projects: out.1,
-            modules: out.2,
-            methods: out.3,
-            edges: out.4,
-            skipped: out.5,
-            failed: out.6,
-        })
-    }
 }
 
 /// Build the index for all workspace folders. Async (libuv thread pool) so the
@@ -223,6 +267,7 @@ pub fn resolve_definition(
     character: u32,
     context_snippet: String,
 ) -> Vec<Location> {
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     let g = match state().read() {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -231,6 +276,14 @@ pub fn resolve_definition(
         .into_iter()
         .map(Location::from_loc)
         .collect()
+    }));
+    match out {
+        Ok(v) => v,
+        Err(p) => {
+            record_panic("resolve_definition", p);
+            Vec::new()
+        }
+    }
 }
 
 /// Directional resolution used by Ctrl/Cmd+Click (down) and F12 (up).
@@ -243,6 +296,7 @@ pub fn resolve_directional(
     direction: String,
     fallback: bool,
 ) -> Vec<Location> {
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     let g = match state().read() {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -260,11 +314,20 @@ pub fn resolve_directional(
     .into_iter()
     .map(Location::from_loc)
     .collect()
+    }));
+    match out {
+        Ok(v) => v,
+        Err(p) => {
+            record_panic("resolve_directional", p);
+            Vec::new()
+        }
+    }
 }
 
 /// Real-time interface-path search: returns display entries, no filesystem paths.
 #[napi]
 pub fn search_path_hits(query: String) -> Vec<PathHit> {
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     let g = match state().read() {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -281,10 +344,19 @@ pub fn search_path_hits(query: String) -> Vec<PathHit> {
             character: e.loc.character,
         })
         .collect()
+    }));
+    match out {
+        Ok(v) => v,
+        Err(p) => {
+            record_panic("search_path_hits", p);
+            Vec::new()
+        }
+    }
 }
 
 #[napi]
 pub fn search_by_path(path: String) -> Vec<Location> {
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     let g = match state().read() {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -293,6 +365,14 @@ pub fn search_by_path(path: String) -> Vec<Location> {
         .into_iter()
         .map(Location::from_loc)
         .collect()
+    }));
+    match out {
+        Ok(v) => v,
+        Err(p) => {
+            record_panic("search_by_path", p);
+            Vec::new()
+        }
+    }
 }
 
 /// Incremental update: re-parse only the given files, then apply a true
@@ -367,18 +447,39 @@ fn do_update(uris: &[String]) -> BuildResult {
 /// Batch incremental update (one rebuild for N changed files).
 #[napi]
 pub fn update_files(uris: Vec<String>) -> BuildResult {
-    do_update(&uris)
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| do_update(&uris))) {
+        Ok(r) => r,
+        Err(p) => {
+            record_panic("updateFiles", p);
+            BuildResult::default()
+        }
+    }
 }
 
 /// Single-file update (kept for tests / simple callers).
 #[napi]
 pub fn update_file(uri: String) {
-    let _ = do_update(&[uri]);
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = do_update(&[uri]);
+    }));
+    if let Err(p) = out {
+        record_panic("updateFile", p);
+    }
 }
 
 /// C-04: reload config from every project root and rebuild.
 #[napi]
 pub fn reload_config() -> BuildResult {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(reload_config_inner)) {
+        Ok(r) => r,
+        Err(p) => {
+            record_panic("reloadConfig", p);
+            BuildResult::default()
+        }
+    }
+}
+
+fn reload_config_inner() -> BuildResult {
     let mut g = match state().write() {
         Ok(v) => v,
         Err(_) => return BuildResult::default(),
@@ -403,6 +504,16 @@ pub fn reload_config() -> BuildResult {
 /// rest of the workspace index intact.
 #[napi]
 pub fn reindex_root(root: String) -> BuildResult {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reindex_root_inner(root))) {
+        Ok(r) => r,
+        Err(p) => {
+            record_panic("reindexRoot", p);
+            BuildResult::default()
+        }
+    }
+}
+
+fn reindex_root_inner(root: String) -> BuildResult {
     let mut g = match state().write() {
         Ok(v) => v,
         Err(_) => return BuildResult::default(),
@@ -472,6 +583,7 @@ pub fn is_ready() -> bool {
 
 #[napi]
 pub fn index_stats() -> String {
+    let lp = last_panic_text();
     let g = match state().read() {
         Ok(v) => v,
         Err(_) => return "state poisoned".to_string(),
@@ -485,7 +597,7 @@ pub fn index_stats() -> String {
     let methods: usize = i.files.iter().map(|f| f.methods.len()).sum();
     let calls: usize = i.files.iter().map(|f| f.calls.len()).sum();
     let xml: usize = i.files.iter().map(|f| f.xml_stmts.len()).sum();
-    format!(
+    let s = format!(
         "projects={} modules={} roots={} files={} java={} xml_stmts={} methods={} calls={} paths={} path_entries={} edges={} down={} up={} aliases={} spans={} skipped={} failed={} call_cache={} impls_cache={} xml_cache={} edge_contrib={}",
         i.project_count,
         i.module_count,
@@ -508,5 +620,13 @@ pub fn index_stats() -> String {
         i.impls_cache.len(),
         i.xml_cache.len(),
         i.edge_contrib.len(),
-    )
+    );
+    if lp.is_empty() {
+        s
+    } else {
+        s.replace(
+            "edge_contrib={}",
+            &("edge_contrib=0 | lastPanic=".to_string() + &lp),
+        )
+    }
 }
