@@ -353,6 +353,17 @@ function check(name, fn) {
     return `-> ${hits.length}`;
   });
 
+  check('D-10 full path (class prefix + method), no bare /getInfo', () => {
+    const hits = addon.searchPathHits('getInfo');
+    if (!hits.some((h) => h.path === '/v1/user/getInfo')) {
+      throw new Error('missing full /v1/user/getInfo');
+    }
+    if (hits.some((h) => h.file === 'UserController.java' && h.path === '/getInfo')) {
+      throw new Error('bare /getInfo still indexed');
+    }
+    return `-> ${hits.length}`;
+  });
+
   check('S-01 searchByPath /v1/user/getInfo -> Controller', () => {
     const out = addon.searchByPath('/v1/user/getInfo');
     if (!out.some((l) => l.uri.includes(ctrl))) throw new Error('no controller location: ' + JSON.stringify(out));

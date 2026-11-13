@@ -217,6 +217,16 @@ function has(out, rel) {
     return `-> ${hits.length}`;
   });
 
+  check('D-10 list shows full path (class prefix + method), no bare /list', () => {
+    const hits = addon.searchPathHits('list');
+    if (!hits.some((h) => h.path === '/system/user/list' && h.file === 'SysUserController.java')) {
+      throw new Error('missing full /system/user/list');
+    }
+    const bare = hits.find((h) => h.file === 'SysUserController.java' && h.path === '/list');
+    if (bare) throw new Error('bare /list still indexed');
+    return `-> ${hits.length}`;
+  });
+
   // C-02/C-03/C-04: an explicit alias overrides the inferred field type.
   const cfgDir = path.join(root, '.idea');
   const cfgPath = path.join(cfgDir, 'spring-nav.toml');

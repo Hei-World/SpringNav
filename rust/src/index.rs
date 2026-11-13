@@ -504,16 +504,10 @@ fn build_maps(index: &mut Index) {
                         .unwrap_or_else(|| "ANY".to_string());
                     for b in &bases {
                         for p in &md.paths {
+                            // Keep only the FULL path: class-level prefix + method path
+                            // (e.g. /sys + /list => /sys/list). No bare /list entries.
                             path_candidates.push((
                                 join_url_path(b, p),
-                                file.clone(),
-                                verb.clone(),
-                                module.clone(),
-                                md.loc.clone(),
-                            ));
-                            // Also index the method path alone for forgiving search.
-                            path_candidates.push((
-                                normalize_url_path(p),
                                 file.clone(),
                                 verb.clone(),
                                 module.clone(),

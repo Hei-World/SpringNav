@@ -94,8 +94,8 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 
 命令面板执行 `SpringNav: Search by URL path`（或绑定快捷键），打开**实时搜索列表**：
 
-- 输入即过滤，无需回车；输入框为空时列出全部接口。
-- 每行显示：`接口全路径 ((文件名) [HTTP方法]) 模块名`，例如 `/system/user/list  ((SysUserController.java) [GET])  ruoyi-admin`。
+- **打开时列表为空，输入内容后才开始检索**（输入即过滤，无需回车）；清空输入则列表恢复为空。
+- 每行显示**接口完整路径（控制器类级前缀 + 方法路径，如 `/sys` + `/list` = `/sys/list`）**，后接 `((文件名) [HTTP方法])` 与模块名，例如 `/system/user/list  ((SysUserController.java) [GET])  ruoyi-admin`（不再单列 `/list` 这种片段）。
 - 支持多关键词（空格分隔，全部命中优先，若无结果则任一命中），如 `user list`。
 - 回车打开选中项；不显示文件的绝对路径。
 
@@ -190,8 +190,8 @@ npm run package       # 编译 + 构建 + npx @vscode/vsce package --no-dependen
 ## 测试
 
 ```bash
-node scripts/smoke.js                       # 合成最小 SpringBoot 工程，24 项断言
-node test/harness.js /path/to/RuoYi-Vue     # 真实开源项目端到端断言（23 项）
+node scripts/smoke.js                       # 合成最小 SpringBoot 工程，25 项断言
+node test/harness.js /path/to/RuoYi-Vue     # 真实开源项目端到端断言（24 项）
 ```
 
 `smoke.js` 自建一个 Controller/Service/Impl/Mapper/XML/Entity 齐全的临时工程；`harness.js` 对 [RuoYi-Vue](https://github.com/yangzongzhuan/RuoYi-Vue) 验证

@@ -211,11 +211,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('springNav.searchByPath', async () => {
       const qp = vscode.window.createQuickPick<PathItem>();
       qp.title = 'SpringNav: 按接口路径搜索';
-      qp.placeholder = '输入路径片段实时过滤，例如 /system/user/list';
+      qp.placeholder = '输入路径片段开始检索，例如 /system/user/list';
       qp.matchOnDescription = false;
       qp.matchOnDetail = false;
+      // No list until the user types something.
       qp.onDidChangeValue((value) => {
-        qp.items = toPathItems(native.searchPathHits(value));
+        qp.items = value.trim() ? toPathItems(native.searchPathHits(value)) : [];
       });
       qp.onDidAccept(async () => {
         const selected = qp.selectedItems[0];
@@ -228,7 +229,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         });
       });
       qp.onDidHide(() => qp.dispose());
-      qp.items = toPathItems(native.searchPathHits(''));
+      qp.items = [];
       qp.show();
     })
   );
