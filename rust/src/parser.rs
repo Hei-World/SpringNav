@@ -54,11 +54,23 @@ static RE_METHOD_REF: LazyLock<Regex> =
 
 /// Local variable declaration: `Type name =` (not `==`), single line.
 static RE_VAR_DECL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|[;{(]\s*)(?:final\s+)?([A-Z][\w.]*(?:<[^=;]*?>)?(?:\[\])?)\s+([a-z_$][\w$]*)\s*=[^=]").unwrap());
+    LazyLock::new(|| Regex::new(r"(?:^|[;{(])\s*(?:final\s+)?([A-Z][\w.]*(?:<[^=;]*?>)?(?:\[\])?)\s+([a-z_$][\w$]*)\s*=[^=]").unwrap());
 
 /// Bare ALL_CAPS constant/field identifier (not a call, not a member access).
 static RE_BARE_CONST: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b([A-Z][A-Z0-9_]{2,})\b").unwrap());
+
+/// Lambda parameter: `(Type var)` followed by `->` or `{`.
+static RE_LAMBDA_VAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(\s*(?:final\s+)?([A-Z][\w.]*(?:<[^=;()]*?>)?(?:\[\])?)\s+([a-z_$][\w$]*)\s*\)\s*(?:->|\{)").unwrap());
+
+/// Enhanced-for variable: `for (Type var : ...)` (also `;` for nested).
+static RE_FOREACH_VAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bfor\s*\(\s*(?:final\s+)?([A-Z][\w.]*(?:<[^=;]*?>)?(?:\[\])?)\s+([a-z_$][\w$]*)\s*[:;]").unwrap());
+
+/// Constructor reference: `new X(...)`.
+static RE_NEW_TYPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bnew\s+([A-Z][\w.]*)\s*\(").unwrap());
 
 static RE_MAPPER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)<mapper\b[^>]*\bnamespace\s*=\s*["']([^"']+)["']"#).unwrap()
@@ -717,18 +729,25 @@ fn scan_method_refs(line: &str, line_no: u32, uri: &str, model: &mut FileModel) 
         model.method_refs.push(MethodRef {
             name: m.as_str().to_string(),
             loc: Loc::new(uri, line_no, col(line, m.start())),
-            class,
+            class: class.clone(),
         });
+        if !class.is_empty() {
+            // Clicking the class part of `Cls::method` jumps to the class.
+            model.type_refs.push(TypeRef {
+                name: class,
+                loc: Loc::new(uri, line_no, col(line, cls.start())),
+            });
+        }
     }
 }
 
 /// `Type name =` local declarations (single line; params are captured
 /// separately in `try_method_decl`).
-fn scan_var_decls(line: &str, line_no: u32, model: &mut FileModel) {
+fn scan_var_decls(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
     for caps in RE_VAR_DECL.captures_iter(line) {
-        let ty = caps.get(1).unwrap().as_str();
+        let ty = caps.get(1).unwrap();
         let name = caps.get(2).unwrap().as_str();
-        let simple = strip_to_simple(ty);
+        let simple = strip_to_simple(ty.as_str());
         if simple.is_empty() || CONTROL.contains(&name) {
             continue;
         }
@@ -738,6 +757,31 @@ fn scan_var_decls(line: &str, line_no: u32, model: &mut FileModel) {
             type_simple: simple,
             line: line_no,
         });
+        model.type_refs.push(TypeRef {
+            name: strip_to_simple(ty.as_str()),
+            loc: Loc::new(uri, line_no, col(line, ty.start())),
+        });
+    }
+    // lambda `(Type var) ->` and enhanced-for `for (Type var : ...)`
+    for re in [&RE_LAMBDA_VAR, &RE_FOREACH_VAR] {
+        for caps in re.captures_iter(line) {
+            let ty = caps.get(1).unwrap();
+            let name = caps.get(2).unwrap().as_str();
+            let simple = strip_to_simple(ty.as_str());
+            if simple.is_empty() || CONTROL.contains(&name) {
+                continue;
+            }
+            model.var_decls.push(VarDecl {
+                method: None,
+                name: name.to_string(),
+                type_simple: simple,
+                line: line_no,
+            });
+            model.type_refs.push(TypeRef {
+                name: strip_to_simple(ty.as_str()),
+                loc: Loc::new(uri, line_no, col(line, ty.start())),
+            });
+        }
     }
 }
 
@@ -803,6 +847,17 @@ fn scan_bare_consts(line: &str, line_no: u32, uri: &str, model: &mut FileModel) 
             loc: Loc::new(uri, line_no, col(line, m.start())),
         });
     }
+}
+
+/// Char column of the declared type on a field line: the first occurrence of
+/// the type simple name that is followed by the field name.
+fn line_rfind_type(line: &str, type_simple: &str) -> Option<u32> {
+    let type_word_start = line.find(type_simple)?;
+    let after = &line[type_word_start + type_simple.len()..];
+    if after.trim_start_matches('&').trim_start().starts_with(|c: char| c.is_ascii_lowercase() || c == '_') {
+        return Some(col(line, type_word_start));
+    }
+    None
 }
 
 fn assign_owners(model: &mut FileModel) {
@@ -933,28 +988,82 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             continue;
         }
         if t.starts_with("import ") {
+            let is_static = t.starts_with("import static ");
             if let Some(caps) = RE_IMPORT.captures(line) {
                 if let Some(fqcn) = caps.get(1) {
-                    model.imports.push(fqcn.as_str().to_string());
+                    let f = fqcn.as_str().to_string();
+                    if is_static {
+                        // `import static pkg.Class.MEMBER;` — record (class, member).
+                        if let Some((cls, member)) = f.rsplit_once('.') {
+                            model.imports.push(cls.to_string());
+                            model.static_imports.push((cls.to_string(), member.to_string()));
+                        }
+                    } else {
+                        model.imports.push(f);
+                    }
                 }
             }
             i += 1;
             continue;
         }
 
+        let class_kind = RE_CLASS
+            .captures(line)
+            .map(|k| k.get(1).unwrap().as_str().to_string())
+            .unwrap_or_default();
         if let Some((name, is_iface, supers, name_byte)) = parse_class_decl(line) {
             if model.class_name.is_empty() {
                 model.class_name = name;
                 model.is_interface = is_iface;
+                model.is_enum = class_kind == "enum";
                 model.supers = supers;
                 model.class_annotations = std::mem::take(&mut pending);
                 model.class_paths = collect_paths(&model.class_annotations);
                 model.class_loc = Loc::new(&c.uri, i as u32, col(line, name_byte));
+                // Clicking extends/implements targets jumps to those classes.
+                for sup in &model.supers {
+                    if let Some(b) = line.rfind(sup.as_str()) {
+                        model.type_refs.push(TypeRef {
+                            name: sup.clone(),
+                            loc: Loc::new(&c.uri, i as u32, col(line, b)),
+                        });
+                    }
+                }
             } else {
                 pending.clear();
             }
             i += 1;
             continue;
+        }
+        // Enum constant declarations: `NAME,` / `NAME(args),` / `NAME;`
+        if model.is_enum {
+            let tt = t.trim_end_matches(',').trim_end_matches(';').trim();
+            let base = tt.split('(').next().unwrap_or(tt).trim();
+            let looks_const = !base.is_empty()
+                && base.chars().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+                && (t.ends_with(',') || t.ends_with(';'))
+                && !t.starts_with("private ")
+                && !t.starts_with("public ")
+                && !t.starts_with("protected ")
+                && !t.starts_with("return ")
+                && !t.starts_with('.')
+                && !t.starts_with("case ")
+                && !t.contains("::")
+                && !t.contains('=');
+            if looks_const && is_ident(base) {
+                model.fields.push(FieldDecl {
+                    name: base.to_string(),
+                    type_simple: model.class_name.clone(),
+                    loc: Loc::new(&c.uri, i as u32, col(line, line.find(base).unwrap_or(0))),
+                    is_static: true,
+                    is_final: true,
+                    annotations: Vec::new(),
+                });
+                scan_field_refs(line, i as u32, &c.uri, &mut model);
+                scan_method_refs(line, i as u32, &c.uri, &mut model);
+                i += 1;
+                continue;
+            }
         }
 
         if let Some((mut md, consumed, param_vars)) =
@@ -965,10 +1074,23 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             md.accessor_field = detect_accessor(&lines[i + consumed..], &md.name);
             model.methods.push(md);
             let idx = model.methods.len() - 1;
-            for mut v in param_vars {
+            for mut v in param_vars.iter().cloned() {
                 v.method = Some(idx);
                 v.line = i as u32;
                 model.var_decls.push(v);
+            }
+            // Clicking a PARAMETER TYPE jumps to its class (single-line signatures).
+            if consumed == 1 {
+                for pv in param_vars.iter() {
+                    if pv.type_simple.chars().next().is_some_and(|c| c.is_uppercase()) {
+                        if let Some(b) = line.find(&pv.type_simple) {
+                            model.type_refs.push(TypeRef {
+                                name: pv.type_simple.clone(),
+                                loc: Loc::new(&c.uri, i as u32, col(line, b)),
+                            });
+                        }
+                    }
+                }
             }
             pending.clear();
             // Calls / refs may appear on the declaration line itself.
@@ -980,6 +1102,7 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
 
         if let Some(mut f) = try_field_decl(line, i as u32, &c.uri) {
             f.annotations = pending.iter().map(|a| a.name.clone()).collect();
+            let ts = f.type_simple.clone();
             model.fields.push(f);
             pending.clear();
             // The line may also carry calls / field references
@@ -987,8 +1110,15 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             scan_calls(line, i as u32, &c.uri, &mut model);
             scan_bare_calls(line, i as u32, &c.uri, &mut model);
             scan_field_refs(line, i as u32, &c.uri, &mut model);
-            scan_var_decls(line, i as u32, &mut model);
+            scan_var_decls(line, i as u32, &c.uri, &mut model);
             scan_method_refs(line, i as u32, &c.uri, &mut model);
+            // Clicking the declared TYPE jumps to that class.
+            if let Some(ty) = line_rfind_type(line, &ts) {
+                model.type_refs.push(TypeRef {
+                    name: ts,
+                    loc: Loc::new(&c.uri, i as u32, ty),
+                });
+            }
             i += 1;
             continue;
         }
@@ -997,8 +1127,16 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
         scan_bare_calls(line, i as u32, &c.uri, &mut model);
         scan_field_refs(line, i as u32, &c.uri, &mut model);
         scan_bare_consts(line, i as u32, &c.uri, &mut model);
-        scan_var_decls(line, i as u32, &mut model);
+        scan_var_decls(line, i as u32, &c.uri, &mut model);
         scan_method_refs(line, i as u32, &c.uri, &mut model);
+        // `new X(...)` — click the type jumps to the class.
+        for caps in RE_NEW_TYPE.captures_iter(line) {
+            let m = caps.get(1).unwrap();
+            model.type_refs.push(TypeRef {
+                name: strip_to_simple(m.as_str()),
+                loc: Loc::new(&c.uri, i as u32, col(line, m.start())),
+            });
+        }
         i += 1;
     }
 

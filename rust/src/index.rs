@@ -742,6 +742,10 @@ fn add_file_spans(index: &mut Index, fi: usize, uri: &str) {
             let end = fr.loc.character + fr.name.chars().count() as u32;
             pending.push((uri.to_string(), fr.loc.line, fr.loc.character, end, fr.loc.clone()));
         }
+        for tr in &m.type_refs {
+            let end = tr.loc.character + tr.name.chars().count() as u32;
+            pending.push((uri.to_string(), tr.loc.line, tr.loc.character, end, tr.loc.clone()));
+        }
         for mr in &m.method_refs {
             pending.push((
                 uri.to_string(),
@@ -1165,6 +1169,19 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
         if fr.class.is_empty() {
             if let Some(f) = m.fields.iter().find(|x| x.name == fr.name) {
                 out.push(k1(fr.loc.clone(), f.loc.clone()));
+            } else {
+                // static import: `import static pkg.C.MEMBER;` then bare MEMBER
+                if let Some((cls_fqcn, _)) = m
+                    .static_imports
+                    .iter()
+                    .find(|(_, mem)| mem == &fr.name)
+                {
+                    if let Some(&cf) = index.by_fqcn.get(cls_fqcn) {
+                        if let Some(fd) = index.files[cf].fields.iter().find(|x| x.name == fr.name) {
+                            out.push(k1(fr.loc.clone(), fd.loc.clone()));
+                        }
+                    }
+                }
             }
         } else {
             for tf in resolve_class(index, fi, &fr.class) {
@@ -1181,6 +1198,17 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
             if let Some(f) = m.fields.iter().find(|x| x.name == *fname) {
                 out.push(k1(md.loc.clone(), f.loc.clone()));
             }
+        }
+    }
+
+    // (i) type references -> class declaration (click type -> entity class).
+    for tr in &m.type_refs {
+        let mut tfiles = resolve_type_files(index, &tr.name);
+        if tfiles.is_empty() {
+            tfiles = resolve_class(index, fi, &tr.name);
+        }
+        for tf in tfiles {
+            out.push(k1(tr.loc.clone(), index.files[tf].class_loc.clone()));
         }
     }
 

@@ -62,6 +62,14 @@ pub struct MethodDecl {
     pub accessor_field: Option<String>,
 }
 
+/// A type reference occurrence (parameter/local/field declaration, `new X()`,
+/// `Cls::method`, extends/implements) — clicking the type jumps to the class.
+#[derive(Clone, Debug, Default)]
+pub struct TypeRef {
+    pub name: String,
+    pub loc: Loc,
+}
+
 /// A parameter or local variable declaration (`Type name`), for P2 receiver
 /// type resolution. `method` = owning method index (assigned post-parse).
 #[derive(Clone, Debug, Default)]
@@ -152,6 +160,7 @@ pub struct FileModel {
     pub class_name: String,
     pub fqcn: String,
     pub is_interface: bool,
+    pub is_enum: bool,
     pub class_loc: Loc,
     pub class_annotations: Vec<Annotation>,
     pub class_paths: Vec<String>,
@@ -165,6 +174,11 @@ pub struct FileModel {
     /// Parameter and local variable declarations with declared types
     /// (drives P2 receiver-type resolution).
     pub var_decls: Vec<VarDecl>,
+    /// Type-name occurrences (click type -> class declaration).
+    pub type_refs: Vec<TypeRef>,
+    /// Static imports: (class fqcn, member name) — bare member references
+    /// resolve through these.
+    pub static_imports: Vec<(String, String)>,
     /// Field/constant references (`Class.CONST`, `this.field`).
     pub field_refs: Vec<FieldRef>,
     // Role is assigned while building the index (config may override it).

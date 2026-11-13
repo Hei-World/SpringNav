@@ -280,6 +280,57 @@ public class TaskEvent {
 );
 
 write(
+  'src/main/java/com/example/domain/EventKind.java',
+  `package com.example.domain;
+
+public enum EventKind {
+    COMPANY,
+    INDUSTRY,
+    OTHER
+}
+`
+);
+
+write(
+  'src/main/java/com/example/util/StrConst.java',
+  `package com.example.util;
+
+public class StrConst {
+    public static final String TOKEN_PREFIX = "tk_";
+}
+`
+);
+
+write(
+  'src/main/java/com/example/service/KindService.java',
+  `package com.example.service;
+
+import com.example.domain.EventKind;
+import com.example.domain.TaskEvent;
+import static com.example.util.StrConst.TOKEN_PREFIX;
+
+public class KindService {
+    public boolean go(TaskEvent event, EventKind kind) {
+        TaskEvent body = new TaskEvent();
+        for (TaskEvent e : java.util.Collections.emptyList()) {
+            if (e.getLoopNote() != null) {
+                return false;
+            }
+        }
+        if (kind == EventKind.COMPANY && TOKEN_PREFIX.isEmpty()) {
+            return doComplete(event);
+        }
+        return false;
+    }
+
+    private boolean doComplete(TaskEvent event) {
+        return true;
+    }
+}
+`
+);
+
+write(
   'src/main/java/com/example/service/TaskEventService.java',
   `package com.example.service;
 
@@ -568,6 +619,59 @@ function check(name, fn) {
   check('P2-7 down: 调用点 -> 方法定义', () => {
     const out = resolveDir(P2SVC, 'mark(TaskEvent::getLoopNote', 'down', 2);
     if (!out.some((l) => l.uri.includes(P2SVC))) throw new Error('no def: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  // ---- P2 扩展: 类型引用 / lambda / for-each / 静态导入 / 枚举 ----
+  const P2KIND = 'src/main/java/com/example/service/KindService.java';
+  const P2ENUM = 'EventKind.java';
+  const P2SCONST = 'StrConst.java';
+
+  check('P2-8 down: 点击参数类型 TaskEvent -> 实体类声明', () => {
+    const out = resolveDir(P2KIND, 'go(TaskEvent event', 'down', 7);
+    if (!out.some((l) => l.uri.includes(P2ENT))) throw new Error('no class: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-9 down: 点击局部变量类型 -> 实体类声明', () => {
+    const out = resolveDir(P2KIND, 'TaskEvent body = new TaskEvent()', 'down', 2);
+    if (!out.some((l) => l.uri.includes(P2ENT))) throw new Error('no class: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-10 down: new TaskEvent() 类型点击 -> 类声明', () => {
+    const out = resolveDir(P2KIND, 'new TaskEvent()', 'down', 4);
+    if (!out.some((l) => l.uri.includes(P2ENT))) throw new Error('no class: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-11 down: for-each 类型点击 -> 类声明', () => {
+    const out = resolveDir(P2KIND, 'for (TaskEvent e :', 'down', 8);
+    if (!out.some((l) => l.uri.includes(P2ENT))) throw new Error('no class: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-12 down: for-each 变量 e.getLoopNote() -> 实体字段', () => {
+    const out = resolveDir(P2KIND, 'e.getLoopNote()', 'down', 4);
+    if (!out.some((l) => l.uri.includes(P2ENT))) throw new Error('no field: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-13 down: 静态导入常量 TOKEN_PREFIX -> 常量声明', () => {
+    const out = resolveDir(P2KIND, 'TOKEN_PREFIX.isEmpty()', 'down', 2);
+    if (!out.some((l) => l.uri.includes(P2SCONST))) throw new Error('no const: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-14 down: 枚举引用 EventKind.COMPANY -> 枚举常量', () => {
+    const out = resolveDir(P2KIND, 'EventKind.COMPANY', 'down', 12);
+    if (!out.some((l) => l.uri.includes(P2ENUM))) throw new Error('no enum: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P2-15 down: 点击参数类型 EventKind -> 枚举类声明', () => {
+    const out = resolveDir(P2KIND, 'EventKind kind', 'down', 2);
+    if (!out.some((l) => l.uri.includes(P2ENUM))) throw new Error('no enum class: ' + JSON.stringify(out));
     return 'ok';
   });
 
