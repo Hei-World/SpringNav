@@ -31,6 +31,9 @@ pub struct Candidate {
     pub content: String,
     pub is_xml: bool,
     pub project_root: String,
+    /// Parse regardless of the relevance filter (import-closure files,
+    /// files already indexed).
+    pub force: bool,
 }
 
 pub struct ScanResult {
@@ -135,7 +138,68 @@ pub fn collect_with_stats(root: &str, project_root: &str) -> (Vec<Candidate>, u3
                 content: String::from_utf8_lossy(&bytes).into_owned(),
                 is_xml,
                 project_root: project_root.to_string(),
+                force: false,
             });
+        }
+    }
+    (out, skipped)
+}
+
+/// Collect files whose class name (file stem) is in `names` — the import
+/// closure: utility/constant classes are not suffix-relevant but must be
+/// indexed so static calls and constant references can jump. Files whose
+/// stem is in `known` are skipped (already collected).
+pub fn collect_by_names(
+    roots: &[String],
+    names: &HashSet<String>,
+    known: &HashSet<String>,
+) -> (Vec<Candidate>, u32) {
+    let mut out = Vec::new();
+    let mut skipped = 0u32;
+    for root in roots {
+        for pr in discover_projects(root) {
+            let mut stack: Vec<(PathBuf, u32)> = vec![(PathBuf::from(&pr), 0)];
+            while let Some((dir, depth)) = stack.pop() {
+                if depth > SCAN_DEPTH {
+                    continue;
+                }
+                let Ok(rd) = fs::read_dir(&dir) else {
+                    continue;
+                };
+                for e in rd.flatten() {
+                    let p = e.path();
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if p.is_dir() {
+                        if !SKIP_DIRS.contains(&name.as_str()) {
+                            stack.push((p, depth + 1));
+                        }
+                        continue;
+                    }
+                    if !name.ends_with(".java") {
+                        continue;
+                    }
+                    let stem = name.trim_end_matches(".java").to_string();
+                    if !names.contains(&stem) || known.contains(&stem) {
+                        continue;
+                    }
+                    let path_str = p.to_string_lossy().into_owned();
+                    let Ok(bytes) = fs::read(&path_str) else {
+                        continue;
+                    };
+                    if bytes.len() as u64 > MAX_FILE_BYTES {
+                        skipped += 1;
+                        continue;
+                    }
+                    out.push(Candidate {
+                        uri: path_to_uri(&path_str),
+                        path: path_str.clone(),
+                        content: String::from_utf8_lossy(&bytes).into_owned(),
+                        is_xml: false,
+                        project_root: pr.clone(),
+                        force: true,
+                    });
+                }
+            }
         }
     }
     (out, skipped)

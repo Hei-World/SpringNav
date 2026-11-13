@@ -57,6 +57,9 @@ pub struct MethodDecl {
     pub paths: Vec<String>,
     /// HTTP verbs inferred from mapping annotations (GET/POST/...).
     pub http_methods: Vec<String>,
+    /// For hand-written accessors: the field this get/set/is method reads or
+    /// writes (trivial body detection). None for everything else.
+    pub accessor_field: Option<String>,
 }
 
 /// One entry of the interface-path index, carrying display metadata.
@@ -93,6 +96,20 @@ pub struct CallSite {
     pub field_loc: Loc,
     /// Index into FileModel.methods of the enclosing method.
     pub owner_method: Option<usize>,
+    /// Receiver kind: 0 = explicit `x.y(` (field or class, resolved at index
+    /// time), 1 = `this.y(`, 2 = bare `y(` (same class / inherited).
+    pub kind: u8,
+}
+
+/// A field/constant reference: `Class.CONST` (class = simple name) or
+/// `this.field` (class empty). Bare identifiers are not captured (P2).
+#[derive(Clone, Debug, Default)]
+pub struct FieldRef {
+    /// Simple class name; empty = current class (`this.field`).
+    pub class: String,
+    pub name: String,
+    /// Position of the referenced identifier.
+    pub loc: Loc,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -130,6 +147,10 @@ pub struct FileModel {
     pub fields: Vec<FieldDecl>,
     pub calls: Vec<CallSite>,
     pub method_refs: Vec<MethodRef>,
+    /// Imported fully-qualified class names (drives static-call resolution).
+    pub imports: Vec<String>,
+    /// Field/constant references (`Class.CONST`, `this.field`).
+    pub field_refs: Vec<FieldRef>,
     // Role is assigned while building the index (config may override it).
     pub role: Role,
     // XML mapper metadata

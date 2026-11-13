@@ -49,8 +49,12 @@ pub struct Index {
     pub up: HashMap<Loc, Vec<Loc>>,
     /// one-way aliases: call sites / method refs -> declarations
     pub aliases: HashMap<Loc, Vec<Loc>>,
-    /// Cached call-site resolution (call-site Loc -> (targets, from_lombok)).
-    pub call_cache: HashMap<Loc, (Vec<Loc>, bool)>,
+    /// Cached call-site resolution (call-site Loc -> (targets, from_lombok,
+    /// field_based)). field_based=true when resolved through an injected
+    /// field, i.e. the only case that gets an owner-declaration down edge.
+    pub call_cache: HashMap<Loc, CallCacheEntry>,
+    /// Java file indices grouped by package (same-package class resolution).
+    pub by_package: HashMap<String, Vec<usize>>,
     /// call-site Loc -> owning file idx (for incremental invalidation).
     pub call_owner: HashMap<Loc, usize>,
     /// Cached interface -> impl file indices, keyed by interface FQCN.
@@ -84,6 +88,7 @@ impl Index {
             by_uri: HashMap::new(),
             by_simple: HashMap::new(),
             by_fqcn: HashMap::new(),
+            by_package: HashMap::new(),
             interface_impls: HashMap::new(),
             method_index: HashMap::new(),
             lombok: HashMap::new(),
@@ -385,26 +390,24 @@ fn cache_impls(index: &mut Index, si: usize, cfg: &Config) {
     index.impls_cache.insert(key, v);
 }
 
+/// XML statement lookup for a mapper method. Accuracy-first: EXACT
+/// (namespace, id) only — loose prefix/contains matching produced wrong
+/// edges (e.g. selectUserList matching selectUserIdByPhonenumber).
 fn cached_fuzzy_xml(index: &Index, ns: &str, name: &str) -> Vec<Loc> {
     let key = (ns.to_string(), name.to_string());
     if let Some(v) = index.xml_cache.get(&key) {
         return v.clone();
     }
     let mut out = Vec::new();
-    for ((n, id), locs) in &index.xml_index {
-        if n == ns
-            && (id == name
-                || id.contains(name)
-                || name.contains(id)
-                || common_prefix(id, name) >= 4)
-        {
-            out.extend(locs.iter().cloned());
-        }
+    if let Some(locs) = index.xml_index.get(&(ns.to_string(), name.to_string())) {
+        out.extend(locs.iter().cloned());
     }
     if out.is_empty() {
+        // Namespace suffix mismatch fallback (mapper interface in a
+        // different package than the XML namespace), still exact on id.
         let simple = ns.rsplit('.').next().unwrap_or(ns);
         for ((n, id), locs) in &index.xml_index {
-            if n.ends_with(simple) && (id == name || id.contains(name) || name.contains(id)) {
+            if n.ends_with(simple) && id == name {
                 out.extend(locs.iter().cloned());
             }
         }
@@ -444,13 +447,6 @@ fn capitalize(s: &str) -> String {
         Some(c) => c.to_uppercase().collect::<String>() + it.as_str(),
         None => String::new(),
     }
-}
-
-fn common_prefix(a: &str, b: &str) -> usize {
-    a.chars()
-        .zip(b.chars())
-        .take_while(|(x, y)| x == y)
-        .count()
 }
 
 /// Lombok-generated accessors for ONE file.
@@ -589,6 +585,12 @@ fn add_file_maps(index: &mut Index, fi: usize) {
     let uri = m.uri.clone();
     if m.kind == FileKind::Java {
         index.by_uri.insert(uri.clone(), fi);
+        let pkg = m
+            .fqcn
+            .rsplit_once('.')
+            .map(|(p, _)| p.to_string())
+            .unwrap_or_default();
+        index.by_package.entry(pkg).or_default().push(fi);
         index
             .by_simple
             .entry(m.class_name.clone())
@@ -723,14 +725,22 @@ fn add_file_spans(index: &mut Index, fi: usize, uri: &str) {
                 me,
                 cs.loc.clone(),
             ));
+            // Receiver click: an injected-field receiver anchors at its own
+            // position and resolves via the field-declaration alias (k2 above);
+            // this./bare receivers resolve like the call itself.
+            let tgt = if cs.kind == 0 { cs.field_loc.clone() } else { cs.loc.clone() };
             let fe = cs.field_loc.character + cs.field.chars().count() as u32;
             pending.push((
                 uri.to_string(),
                 cs.field_loc.line,
                 cs.field_loc.character,
                 fe,
-                cs.loc.clone(),
+                tgt,
             ));
+        }
+        for fr in &m.field_refs {
+            let end = fr.loc.character + fr.name.chars().count() as u32;
+            pending.push((uri.to_string(), fr.loc.line, fr.loc.character, end, fr.loc.clone()));
         }
         for mr in &m.method_refs {
             pending.push((
@@ -790,6 +800,10 @@ fn remove_file_maps(index: &mut Index, fi: usize) {
         index.by_simple.remove(&k);
     }
     index.by_fqcn.retain(|_, v| *v != fi);
+    for v in index.by_package.values_mut() {
+        v.retain(|x| *x != fi);
+    }
+    index.by_package.retain(|_, v| !v.is_empty());
     for v in index.interface_impls.values_mut() {
         v.retain(|x| *x != fi);
     }
@@ -904,37 +918,68 @@ fn k2(a: Loc, b: Loc) -> Triple {
 
 /// Compute all edge contributions owned by ONE file. Uses the resolution cache
 /// for call sites; caches impl/fuzzy-xml lookups to avoid O(N) scans per file.
+/// Cached call-site resolution entry: (targets, from_lombok, field_based).
+type CallCacheEntry = (Vec<Loc>, bool, bool);
+
 fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple> {
     let m = index.files[fi].clone();
     let mut out = Vec::new();
-    let mut cache_writes: Vec<(Loc, (Vec<Loc>, bool))> = Vec::new();
+    let mut cache_writes: Vec<(Loc, CallCacheEntry)> = Vec::new();
 
-    // (a) call sites: Controller -> Service (J-01), ServiceImpl -> Mapper (J-03)
+    // (a) call sites: Controller -> Service (J-01), ServiceImpl -> Mapper (J-03),
+    //     this./bare -> current class (P1), static -> imported/same-package class (P1).
     for cs in &m.calls {
         index.call_owner.insert(cs.loc.clone(), fi);
-        let (targets, from_lombok) = match index.call_cache.get(&cs.loc).cloned() {
+        let (targets, from_lombok, field_based) = match index.call_cache.get(&cs.loc).cloned() {
             Some(v) => v,
             None => {
                 let mut targets = Vec::new();
                 let mut from_lombok = false;
-                if let Some(t) = resolve_field_type(index, fi, &cs.field, cfg) {
-                    let tfiles = resolve_type_files(index, &t);
-                    if !tfiles.is_empty() {
-                        targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
-                        if targets.is_empty() {
-                            let lt =
-                                find_lombok(index, &tfiles, &cs.method, Some(cs.arg_count));
-                            if !lt.is_empty() {
-                                targets = lt;
-                                from_lombok = true;
+                let mut field_based = false;
+                match cs.kind {
+                    1 | 2 => {
+                        // this.x() / bare x(): current class, then supers.
+                        let mut scope = vec![fi];
+                        for s in &m.supers {
+                            if let Some(&sf) = index.by_fqcn.get(s) {
+                                scope.push(sf);
+                            }
+                        }
+                        targets = find_methods(index, &scope, &cs.method, Some(cs.arg_count));
+                    }
+                    _ => {
+                        if let Some(t) = resolve_field_type(index, fi, &cs.field, cfg) {
+                            field_based = true;
+                            let tfiles = resolve_type_files(index, &t);
+                            if !tfiles.is_empty() {
+                                targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
+                                if targets.is_empty() {
+                                    let lt = find_lombok(index, &tfiles, &cs.method, Some(cs.arg_count));
+                                    if !lt.is_empty() {
+                                        targets = lt;
+                                        from_lombok = true;
+                                    }
+                                }
+                            }
+                        } else if cs.field.chars().next().is_some_and(|c| c.is_uppercase()) {
+                            // static call on a project class (same package / import / unique simple name)
+                            let tfiles = resolve_class(index, fi, &cs.field);
+                            if !tfiles.is_empty() {
+                                targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
                             }
                         }
                     }
                 }
-                cache_writes.push((cs.loc.clone(), (targets.clone(), from_lombok)));
-                (targets, from_lombok)
+                cache_writes.push((cs.loc.clone(), (targets.clone(), from_lombok, field_based)));
+                (targets, from_lombok, field_based)
             }
         };
+        // Receiver click -> field declaration ("变量支持跳转").
+        if cs.kind == 0 {
+            if let Some(f) = m.fields.iter().find(|x| x.name == cs.field) {
+                out.push(k2(cs.field_loc.clone(), f.loc.clone()));
+            }
+        }
         if targets.is_empty() {
             continue;
         }
@@ -943,8 +988,10 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
             .and_then(|o| index.files[fi].methods.get(o).map(|x| x.loc.clone()));
         for tm in &targets {
             out.push(k2(cs.loc.clone(), tm.clone()));
+            // Owner-declaration down edge ONLY for injected-field calls:
+            // declaration clicks must not chain into static/util targets.
             if let Some(ol) = &owner_loc {
-                if !from_lombok {
+                if !from_lombok && field_based && cs.kind == 0 {
                     out.push(k1(ol.clone(), tm.clone()));
                 }
             }
@@ -1063,6 +1110,72 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
         }
     }
 
+    // (g) field/constant references -> field declaration (P1):
+    //     `Class.CONST` resolves via same-package/import/unique-simple-name,
+    //     `this.field` resolves in the current file.
+    for fr in &m.field_refs {
+        if fr.class.is_empty() {
+            if let Some(f) = m.fields.iter().find(|x| x.name == fr.name) {
+                out.push(k1(fr.loc.clone(), f.loc.clone()));
+            }
+        } else {
+            for tf in resolve_class(index, fi, &fr.class) {
+                if let Some(fd) = index.files[tf].fields.iter().find(|x| x.name == fr.name) {
+                    out.push(k1(fr.loc.clone(), fd.loc.clone()));
+                }
+            }
+        }
+    }
+
+    // (h) hand-written trivial accessors -> field (P1), any role
+    for md in &m.methods {
+        if let Some(fname) = &md.accessor_field {
+            if let Some(f) = m.fields.iter().find(|x| x.name == *fname) {
+                out.push(k1(md.loc.clone(), f.loc.clone()));
+            }
+        }
+    }
+
+    out
+}
+
+/// Resolve a simple class name to project file indices for `fi`'s context:
+/// same package first, then explicit imports, then a unique project-wide
+/// simple name. Empty when the name is external (JDK / third-party).
+pub(crate) fn resolve_class(index: &Index, fi: usize, simple: &str) -> Vec<usize> {
+    let m = &index.files[fi];
+    let mut out: Vec<usize> = Vec::new();
+    let pkg = m
+        .fqcn
+        .rsplit_once('.')
+        .map(|(p, _)| p.to_string())
+        .unwrap_or_default();
+    if let Some(files) = index.by_package.get(&pkg) {
+        for &tf in files {
+            if tf != fi && index.files[tf].class_name == simple && !out.contains(&tf) {
+                out.push(tf);
+            }
+        }
+    }
+    if out.is_empty() {
+        let suffix = format!(".{}", simple);
+        for imp in &m.imports {
+            if imp == simple || imp.ends_with(&suffix) {
+                if let Some(&tf) = index.by_fqcn.get(imp.as_str()) {
+                    if !out.contains(&tf) {
+                        out.push(tf);
+                    }
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        if let Some(files) = index.by_simple.get(simple) {
+            if files.len() == 1 {
+                out.push(files[0]);
+            }
+        }
+    }
     out
 }
 
@@ -1241,14 +1354,14 @@ pub fn apply_changes(
     //    A call site is invalid when its own file changed OR one of its cached
     //    targets lives in a changed file.
     let mut affected: HashSet<usize> = dirty_fis.iter().copied().collect();
-    let cache_snapshot: Vec<(Loc, (Vec<Loc>, bool))> = state
+    let cache_snapshot: Vec<(Loc, CallCacheEntry)> = state
         .index
         .call_cache
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let mut invalidated: Vec<Loc> = Vec::new();
-    for (k, (targets, _)) in &cache_snapshot {
+    for (k, (targets, _, _)) in &cache_snapshot {
         if dirty_uris.contains(&k.uri) || targets.iter().any(|t| dirty_uris.contains(&t.uri)) {
             invalidated.push(k.clone());
             if let Some(&owner) = state.index.call_owner.get(k) {
@@ -1358,6 +1471,7 @@ mod tests {
                 loc: Loc::new("file:///p/A.java", 5, 16),
                 paths: vec!["/go".into()],
                 http_methods: vec!["GET".into()],
+                accessor_field: None,
             }],
             fields: vec![FieldDecl {
                 name: "svc".into(),
@@ -1388,6 +1502,7 @@ mod tests {
             loc: Loc::new("file:///p/A.java", 6, 8),
             field_loc: Loc::new("file:///p/A.java", 6, 8),
             owner_method: Some(0),
+            kind: 0,
         });
         let mut fs = f2.clone();
         fs.role = Role::Service;

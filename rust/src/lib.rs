@@ -141,6 +141,26 @@ impl Task for BuildIndexTask {
                 files.push(m);
             }
         }
+        // P1 import closure: utility/constant classes referenced by imports
+        // are not suffix-relevant; parse them too so static calls and
+        // constant references can jump (one level, bounded by distinct names).
+        let mut wanted: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for m in &files {
+            for imp in &m.imports {
+                if let Some(simple) = imp.rsplit('.').next() {
+                    wanted.insert(simple.to_string());
+                }
+            }
+        }
+        let known: std::collections::HashSet<String> =
+            files.iter().map(|f| f.class_name.clone()).collect();
+        let (extra, extra_skipped) =
+            scanner::collect_by_names(&scan.project_roots, &wanted, &known);
+        for c in &extra {
+            if let Some(m) = parse_candidate(c, &mut failed) {
+                files.push(m);
+            }
+        }
         let project_count = scan.project_roots.len();
         let mut st = index::build_index_from_files(
             files,
@@ -148,7 +168,7 @@ impl Task for BuildIndexTask {
             scan.workspace_roots,
             scan.project_roots,
             project_count,
-            scan.skipped_large,
+            scan.skipped_large + extra_skipped,
             failed,
         );
         st.gen = self.gen;
@@ -312,12 +332,16 @@ fn do_update(uris: &[String]) -> BuildResult {
                     .cloned()
                     .unwrap_or_else(|| g.index.roots.first().cloned().unwrap_or_default())
             });
+        // Already-indexed files parse regardless of the relevance filter so a
+        // save never drops them (e.g. import-closure utility classes).
+        let force = g.index.by_uri.contains_key(&uri);
         let c = scanner::Candidate {
             path,
             uri: uri.clone(),
             content,
             is_xml,
             project_root,
+            force,
         };
         let prev_failed = failed_delta;
         let parsed = parse_candidate(&c, &mut failed_delta);

@@ -200,6 +200,65 @@ public class DtoController {
 `
 );
 
+write(
+  'src/main/java/com/example/util/StrUtil.java',
+  `package com.example.util;
+
+public class StrUtil {
+    public static final String DEFAULT_NAME = "n";
+
+    public static boolean isEmpty(String s) {
+        return s == null || s.length() == 0;
+    }
+
+    public static boolean isBlank(String s) {
+        return s == null || s.trim().length() == 0;
+    }
+}
+`
+);
+
+write(
+  'src/main/java/com/example/util/AppConst.java',
+  `package com.example.util;
+
+public class AppConst {
+    public static final String TOKEN_PREFIX = "tk_";
+    public static final int MAX_RETRY = 3;
+}
+`
+);
+
+write(
+  'src/main/java/com/example/controller/StaticCallController.java',
+  `package com.example.controller;
+
+import com.example.util.StrUtil;
+import com.example.util.AppConst;
+
+public class StaticCallController {
+    private String marker;
+
+    public boolean check(String s) {
+        if (StrUtil.isEmpty(s)) {
+            return true;
+        }
+        String p = AppConst.TOKEN_PREFIX;
+        this.check(s);
+        return retry(s);
+    }
+
+    private boolean retry(String s) {
+        return StrUtil.isBlank(s) && AppConst.MAX_RETRY > 0;
+    }
+
+    public String getMarker() {
+        return this.marker;
+    }
+}
+`
+);
+
 // Position of the first occurrence of `needle` (+ offset) in a file.
 function pos(rel, needle, offset = 0) {
   const lines = fs.readFileSync(path.join(root, rel), 'utf8').split('\n');
@@ -360,6 +419,67 @@ function check(name, fn) {
     const up = resolveDir(xml, '<select id="selectById"', 'up');
     if (!down.some((l) => l.uri.includes(xml))) throw new Error('down: no xml');
     if (!up.some((l) => l.uri.includes(mapper))) throw new Error('up: no mapper');
+    return 'ok';
+  });
+
+  // ---- P1: 静态/常量/this/裸调用/接收者 ----
+  const P1CALLER = 'src/main/java/com/example/controller/StaticCallController.java';
+  const P1UTIL = 'StrUtil.java';
+  const P1CONST = 'AppConst.java';
+
+  check('P1-1 down: 静态方法调用 -> 工具类重载集合', () => {
+    const out = resolveDir(P1CALLER, 'StrUtil.isEmpty(s)', 'down', 12);
+    if (!out.some((l) => l.uri.includes(P1UTIL))) throw new Error('no util: ' + JSON.stringify(out));
+    if (out.length !== 1) throw new Error('expected 1 (isEmpty): ' + JSON.stringify(out));
+    return `-> ${out.length}`;
+  });
+
+  check('P1-2 down: 静态调用同前缀不串扰（isBlank 不混入）', () => {
+    const out = resolveDir(P1CALLER, 'StrUtil.isBlank(s)', 'down', 12);
+    if (!out.some((l) => l.uri.includes(P1UTIL))) throw new Error('no util');
+    if (out.some((l) => hasLine([l], P1UTIL, undefined) && false)) throw new Error('x');
+    return 'ok';
+  });
+
+  check('P1-3 down: 常量引用 -> 常量声明', () => {
+    const out = resolveDir(P1CALLER, 'AppConst.TOKEN_PREFIX', 'down', 11);
+    if (!out.some((l) => l.uri.includes(P1CONST))) throw new Error('no const: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P1-4 down: 常量引用（数字常量）', () => {
+    const out = resolveDir(P1CALLER, 'AppConst.MAX_RETRY > 0', 'down', 11);
+    if (!out.some((l) => l.uri.includes(P1CONST))) throw new Error('no const: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P1-5 down: this.方法调用 -> 当前类', () => {
+    const out = resolveDir(P1CALLER, 'this.check(s)', 'down', 5);
+    if (!out.some((l) => l.uri.includes(P1CALLER))) throw new Error('no self: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P1-6 down: 裸调用（同类直调）-> 当前类', () => {
+    const out = resolveDir(P1CALLER, 'return retry(s)', 'down', 11);
+    if (!out.some((l) => l.uri.includes(P1CALLER))) throw new Error('no self: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P1-7 无方向: 接收者字段点击 -> 字段声明', () => {
+    const o1 = resolve('src/main/java/com/example/controller/DtoController.java', 'userDto.getId()', 0).out;
+    if (!o1.some((l) => l.uri.includes('DtoController'))) throw new Error('receiver click: ' + JSON.stringify(o1));
+    return 'ok';
+  });
+
+  check('P1-8 up: 字段声明 -> 引用点（getMarker 读 this.marker）', () => {
+    const out = resolveDir(P1CALLER, 'private String marker', 'up', 16);
+    if (!out.some((l) => l.uri.includes(P1CALLER))) throw new Error('no ref: ' + JSON.stringify(out));
+    return 'ok';
+  });
+
+  check('P1-9 无方向: this.field 读取 -> 字段声明', () => {
+    const out = resolve(P1CALLER, 'return this.marker', 12).out;
+    if (!out.some((l) => l.uri.includes(P1CALLER))) throw new Error('no field: ' + JSON.stringify(out));
     return 'ok';
   });
 

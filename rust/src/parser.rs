@@ -35,6 +35,20 @@ static RE_PARAM_ANN: LazyLock<Regex> =
 static RE_CALL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(\w+)\s*\.\s*(\w+)\s*\(").unwrap());
 
+static RE_IMPORT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*import\s+(?:static\s+)?([\w.]+)\s*;").unwrap());
+
+static RE_BARE_CALL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([a-zA-Z_$][\w$]*)\s*\(").unwrap());
+
+/// `Class.CONST` — uppercase constant reference.
+static RE_CONST_REF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b([A-Z][\w$]*)\s*\.\s*([A-Z][A-Z0-9_$]*)\b").unwrap());
+
+/// `this.field` reference (read or write).
+static RE_THIS_FIELD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bthis\s*\.\s*([a-zA-Z_$][\w$]*)").unwrap());
+
 static RE_METHOD_REF: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bthis\s*::\s*(\w+)").unwrap());
 
@@ -452,6 +466,7 @@ fn try_method_decl(
             loc: Loc::new(uri, i as u32, col(first_line, name_byte)),
             paths: Vec::new(),
             http_methods: Vec::new(),
+            accessor_field: None,
         },
         consumed,
     ))
@@ -501,6 +516,15 @@ fn try_field_decl(line: &str, line_no: u32, uri: &str) -> Option<FieldDecl> {
     })
 }
 
+/// Uppercase the first character (for get/set name matching).
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
 fn scan_calls(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
     for caps in RE_CALL.captures_iter(line) {
         let field = caps.get(1).map(|m| m.as_str()).unwrap_or("");
@@ -511,6 +535,7 @@ fn scan_calls(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
         let open = caps.get(0).unwrap().end().saturating_sub(1);
         let method_start = caps.get(2).unwrap().start();
         let field_start = caps.get(1).unwrap().start();
+        let kind = if field == "this" { 1 } else { 0 };
         model.calls.push(CallSite {
             field: field.to_string(),
             method: method.to_string(),
@@ -518,8 +543,126 @@ fn scan_calls(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
             loc: Loc::new(uri, line_no, col(line, method_start)),
             field_loc: Loc::new(uri, line_no, col(line, field_start)),
             owner_method: None,
+            kind,
         });
     }
+}
+
+/// Bare same-class calls `foo(...)` — skips keywords, annotations, `new X(...)`
+/// and declaration lines (they start with visibility modifiers).
+fn scan_bare_calls(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
+    let t = line.trim_start();
+    for w in t.split_whitespace().take(3) {
+        if MODIFIERS.contains(&w) {
+            return; // declaration line
+        }
+    }
+    if t.starts_with('@') {
+        return;
+    }
+    for caps in RE_BARE_CALL.captures_iter(line) {
+        let m = caps.get(1).unwrap();
+        let name = m.as_str();
+        if CONTROL.contains(&name) {
+            continue;
+        }
+        let rest = &line[caps.get(0).unwrap().end()..];
+        let before = &line[..m.start()];
+        if before.ends_with("new ") || before.ends_with("new\t") {
+            continue; // constructor
+        }
+        if before.ends_with('.') {
+            continue; // x.foo( already captured by RE_CALL
+        }
+        let open = caps.get(0).unwrap().end().saturating_sub(1);
+        model.calls.push(CallSite {
+            field: String::new(),
+            method: name.to_string(),
+            arg_count: count_args(line, open),
+            loc: Loc::new(uri, line_no, col(line, m.start())),
+            field_loc: Loc::new(uri, line_no, col(line, m.start())),
+            owner_method: None,
+            kind: 2,
+        });
+        let _ = rest;
+    }
+}
+
+/// `Class.CONST` constants and `this.field` references.
+fn scan_field_refs(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
+    for caps in RE_CONST_REF.captures_iter(line) {
+        let cls = caps.get(1).unwrap();
+        let name = caps.get(2).unwrap();
+        model.field_refs.push(FieldRef {
+            class: cls.as_str().to_string(),
+            name: name.as_str().to_string(),
+            loc: Loc::new(uri, line_no, col(line, name.start())),
+        });
+    }
+    for caps in RE_THIS_FIELD.captures_iter(line) {
+        let m = caps.get(1).unwrap();
+        model.field_refs.push(FieldRef {
+            class: String::new(),
+            name: m.as_str().to_string(),
+            loc: Loc::new(uri, line_no, col(line, m.start())),
+        });
+    }
+}
+
+/// Trivial accessor body detection: scan a few body lines for
+/// `return this.x;` / `return x;` (get/is) or `this.x = ...;` (set).
+fn detect_accessor(body: &[&str], name: &str) -> Option<String> {
+    let (prefix, stem) = match () {
+        _ if name.starts_with("get") => ("get", &name["get".len()..]),
+        _ if name.starts_with("is") => ("is", &name["is".len()..]),
+        _ if name.starts_with("set") => ("set", &name["set".len()..]),
+        _ => return None,
+    };
+    if stem.is_empty() {
+        return None;
+    }
+    let mut seen = 0usize;
+    for raw in body {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with("//") || l.starts_with('*') || l.starts_with("/*") {
+            continue;
+        }
+        seen += 1;
+        if seen > 8 {
+            return None;
+        }
+        // stop at the next member declaration
+        if l.starts_with("public ") || l.starts_with("private ") || l.starts_with("protected ")
+            || l == "}"
+        {
+            return None;
+        }
+        if prefix == "set" {
+            if let Some(rest) = l.strip_prefix("this.") {
+                if let Some((field, _)) = rest.split_once('=') {
+                    let f = field.trim();
+                    if capitalize(f) == stem {
+                        return Some(f.to_string());
+                    }
+                }
+            }
+        } else {
+            if let Some(ret) = l.strip_prefix("return ") {
+                let target = ret.trim_end_matches(';').trim();
+                let target = target.strip_prefix("this.").unwrap_or(target);
+                let matches = target == stem.to_lowercase()
+                    || (target.len() == stem.len()
+                        && target
+                            .chars()
+                            .zip(stem.chars())
+                            .all(|(a, b)| a.eq_ignore_ascii_case(&b)));
+                if matches {
+                    return Some(target.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn scan_method_refs(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
@@ -601,7 +744,7 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    if !relevant_java(&c.path, &file_name, &c.content) {
+    if !c.force && !relevant_java(&c.path, &file_name, &c.content) {
         return None;
     }
 
@@ -660,6 +803,11 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             continue;
         }
         if t.starts_with("import ") {
+            if let Some(caps) = RE_IMPORT.captures(line) {
+                if let Some(fqcn) = caps.get(1) {
+                    model.imports.push(fqcn.as_str().to_string());
+                }
+            }
             i += 1;
             continue;
         }
@@ -684,6 +832,7 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
         {
             md.paths = collect_paths(&pending);
             md.http_methods = collect_http_methods(&pending);
+            md.accessor_field = detect_accessor(&lines[i + consumed..], &md.name);
             model.methods.push(md);
             pending.clear();
             // Calls / refs may appear on the declaration line itself.
@@ -697,12 +846,19 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             f.annotations = pending.iter().map(|a| a.name.clone()).collect();
             model.fields.push(f);
             pending.clear();
+            // The line may also carry calls / field references
+            // (e.g. `String p = C.TOKEN_PREFIX;`).
+            scan_calls(line, i as u32, &c.uri, &mut model);
+            scan_bare_calls(line, i as u32, &c.uri, &mut model);
+            scan_field_refs(line, i as u32, &c.uri, &mut model);
             scan_method_refs(line, i as u32, &c.uri, &mut model);
             i += 1;
             continue;
         }
 
         scan_calls(line, i as u32, &c.uri, &mut model);
+        scan_bare_calls(line, i as u32, &c.uri, &mut model);
+        scan_field_refs(line, i as u32, &c.uri, &mut model);
         scan_method_refs(line, i as u32, &c.uri, &mut model);
         i += 1;
     }
@@ -812,6 +968,7 @@ mod tests {
             content: content.to_string(),
             is_xml: false,
             project_root: "/p".to_string(),
+            force: false,
         }
     }
 
