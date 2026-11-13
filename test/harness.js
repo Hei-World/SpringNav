@@ -227,6 +227,33 @@ function has(out, rel) {
     return `-> ${hits.length}`;
   });
 
+  check('D-12 entity getter down resolves to exactly the field', () => {
+    const f = pos(P.entity, 'private Long userId;', 'private Long '.length);
+    const out = resolveDir(P.entity, 'getUserId()', 'down');
+    if (out.length !== 1) throw new Error('expected exactly 1, got ' + out.length);
+    if (!hasLine(out, P.entity, f.line)) throw new Error('not the field line');
+    return 'ok';
+  });
+
+  check('D-11 fuzzy search: fragments / slashes / multi-token', () => {
+    if (!addon.searchPathHits('login').some((h) => h.path.includes('login'))) {
+      throw new Error('fragment "login" not matched');
+    }
+    if (!addon.searchPathHits('system user').some((h) => h.path === '/system/user/list')) {
+      throw new Error('"system user" not matched');
+    }
+    if (!addon.searchPathHits('sys user list').some((h) => h.path === '/system/user/list')) {
+      throw new Error('"sys user list" not matched');
+    }
+    if (!addon.searchPathHits('/sys/user/list').some((h) => h.path === '/system/user/list')) {
+      throw new Error('slash-fuzzy "/sys/user/list" not matched');
+    }
+    if (addon.searchPathHits('').length !== 0) {
+      throw new Error('empty query should return nothing');
+    }
+    return 'ok';
+  });
+
   // C-02/C-03/C-04: an explicit alias overrides the inferred field type.
   const cfgDir = path.join(root, '.idea');
   const cfgPath = path.join(cfgDir, 'spring-nav.toml');

@@ -199,6 +199,27 @@ Controller → Service → Impl → Mapper → XML 双向链、**向下/向上�
 
 ---
 
+## 演示截图（RuoYi-Vue 实机）
+
+| 截图 | 说明 |
+| --- | --- |
+| `docs/01-open.png` | 打开工程，光标在 Controller 的 `userService.selectUserList` 调用点 |
+| `docs/02-ctrlclick-down.png` | `Ctrl+点击` 控制器 → Service 接口方法（向下） |
+| `docs/03-down-service-to-impl.png` | 接口 → 实现类（向下） |
+| `docs/04-down-impl-to-mapper.png` | 实现类 → Mapper（向下） |
+| `docs/05-down-mapper-to-xml.png` | Mapper → XML 语句（向下） |
+| `docs/06-up-xml-to-mapper.png` | `F12` XML → Mapper（向上） |
+| `docs/07-up-service-to-controller-peek.png` | 接口 → 控制器（向上，多结果 Peek 列表） |
+| `docs/08-entity-getter-to-field.png` | `getXX` → 实体字段（向下，直接跳转） |
+| `docs/09-entity-field-to-accessors.png` | 字段 → get/set（向上，Peek 列表） |
+| `docs/10-context-menu.png` | 右键菜单：`转到Java实现` / `转到Java引用` |
+| `docs/11-context-menu-jump.png` | 右键「转到Java实现」实际跳转到字段 |
+| `docs/12-search-empty.png` | 路径搜索打开时列表为空 |
+| `docs/13-search-fuzzy.png` | 输入 `user list` 模糊检索，显示完整路径 |
+| `docs/14-search-slash-fuzzy.png` | 输入 `/sys/user/list` 模糊命中 `/system/user/list` |
+
+---
+
 ## 已知局限
 
 - **多实现 / 多重载**：返回列表供选择（peek），不做「唯一正确」推断。

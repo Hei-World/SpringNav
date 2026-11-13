@@ -364,6 +364,27 @@ function check(name, fn) {
     return `-> ${hits.length}`;
   });
 
+  check('D-12 entity getter down -> exactly the field', () => {
+    const f = pos(entity, 'private Long id;', 'private Long '.length);
+    const out = resolveDir(entity, 'getId()', 'down');
+    if (out.length !== 1) throw new Error('expected exactly 1, got ' + out.length);
+    if (!hasLine(out, entity, f.line)) throw new Error('not the field');
+    return 'ok';
+  });
+
+  check('D-11 fuzzy tokens incl. slashes; empty -> none', () => {
+    if (!addon.searchPathHits('/v1/user/getInfo').some((h) => h.path === '/v1/user/getInfo')) {
+      throw new Error('slash fuzzy failed');
+    }
+    if (!addon.searchPathHits('/user list').some((h) => h.path === '/v1/user/getInfo')) {
+      throw new Error('token fuzzy failed');
+    }
+    if (addon.searchPathHits('').length !== 0) {
+      throw new Error('empty should be none');
+    }
+    return 'ok';
+  });
+
   check('S-01 searchByPath /v1/user/getInfo -> Controller', () => {
     const out = addon.searchByPath('/v1/user/getInfo');
     if (!out.some((l) => l.uri.includes(ctrl))) throw new Error('no controller location: ' + JSON.stringify(out));

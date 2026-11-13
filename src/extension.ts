@@ -144,6 +144,9 @@ function toPathItems(hits: NativePathHit[]): PathItem[] {
   return hits.map((h) => ({
     label: h.path,
     description: `((${h.file}) [${h.method}])${h.module ? '  ' + h.module : ''}`,
+    // Rust already applied the fuzzy filter; stop VS Code from re-filtering by
+    // label (which would hide "/system/user/list" for a query like "user list").
+    alwaysShow: true,
     target: new vscode.Location(
       vscode.Uri.parse(h.uri),
       new vscode.Position(h.line, h.character)

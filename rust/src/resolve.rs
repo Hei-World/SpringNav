@@ -239,11 +239,16 @@ pub fn search_by_path(index: &Index, path: &str) -> Vec<Loc> {
 pub fn search_path_hits(index: &Index, query: &str) -> Vec<PathEntry> {
     let q = query.trim();
     let ql = q.to_lowercase();
+    // Fuzzy tokens: split on whitespace AND '/', so `/sys/user/list` still
+    // matches `/system/user/list`, while the displayed label stays the full path.
     let tokens: Vec<String> = ql
-        .split_whitespace()
+        .split(|c: char| c.is_whitespace() || c == '/')
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect();
+    if tokens.is_empty() {
+        return Vec::new();
+    }
 
     let hay = |e: &PathEntry| {
         format!(
@@ -255,9 +260,7 @@ pub fn search_path_hits(index: &Index, query: &str) -> Vec<PathEntry> {
         )
     };
 
-    let mut picked: Vec<&PathEntry> = if tokens.is_empty() {
-        index.path_entries.iter().collect()
-    } else {
+    let mut picked: Vec<&PathEntry> = {
         let and: Vec<&PathEntry> = index
             .path_entries
             .iter()

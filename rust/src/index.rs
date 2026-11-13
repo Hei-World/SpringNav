@@ -396,18 +396,6 @@ fn add_edge_dir(index: &mut Index, upper: Loc, lower: Loc) {
     index.up.entry(lower).or_default().push(upper);
 }
 
-/// Same-level peers (e.g. getter <-> setter): both directions resolve to each other.
-fn add_peer(index: &mut Index, a: Loc, b: Loc) {
-    if a == b {
-        return;
-    }
-    add_edge(index, a.clone(), b.clone());
-    index.down.entry(a.clone()).or_default().push(b.clone());
-    index.up.entry(b.clone()).or_default().push(a.clone());
-    index.down.entry(b.clone()).or_default().push(a.clone());
-    index.up.entry(a).or_default().push(b);
-}
-
 fn add_alias(index: &mut Index, a: Loc, b: Loc) {
     if a == b {
         return;
@@ -725,9 +713,11 @@ fn build_edges(index: &mut Index, cfg: &Config) {
             for s in &sl {
                 add_edge_dir(index, s.clone(), f.loc.clone());
             }
+            // getter <-> setter stay undirected only; they must not pollute the
+            // "down = getXX -> field" direction.
             for g in &gl {
                 for s in &sl {
-                    add_peer(index, g.clone(), s.clone());
+                    add_edge(index, g.clone(), s.clone());
                 }
             }
         }
