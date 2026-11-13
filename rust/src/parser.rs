@@ -95,8 +95,12 @@ const MODIFIERS: &[&str] = &[
 
 /// UTF-16-ish column for a byte offset inside `line`.
 pub fn col(line: &str, byte: usize) -> u32 {
-    let b = byte.min(line.len());
-    // `b` is always a char boundary (offsets come from ASCII tokens / regex).
+    let mut b = byte.min(line.len());
+    // Last-resort guard: floor to a char boundary so multi-byte content can
+    // never panic here (offsets are expected to be boundaries already).
+    while b > 0 && !line.is_char_boundary(b) {
+        b -= 1;
+    }
     line[..b].chars().count() as u32
 }
 
@@ -788,30 +792,39 @@ fn scan_var_decls(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
 /// Mask string literal contents with spaces (positions unchanged) so
 /// identifier scans never match inside "text".
 fn mask_strings(line: &str) -> String {
-    let mut out: Vec<char> = line.chars().collect();
+    // Byte-length-preserving mask: every masked char is replaced by as many
+    // spaces as its UTF-8 byte length, so byte offsets in the masked string
+    // are IDENTICAL to the original line (multi-byte content, e.g. Chinese,
+    // previously shifted offsets and caused slicing panics).
+    let mut out = String::with_capacity(line.len());
     let mut in_str = false;
-    let mut i = 0usize;
-    while i < out.len() {
-        let c = out[i];
-        if c == '\\' {
-            if in_str && i + 1 < out.len() {
-                out[i] = ' ';
-                out[i + 1] = ' ';
-                i += 2;
-                continue;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && in_str {
+            // escaped char: mask the backslash and the escaped char/sequence
+            out.push(' ');
+            if let Some(n) = chars.next() {
+                for _ in 0..n.len_utf8() {
+                    out.push(' ');
+                }
             }
-            i += 1;
             continue;
         }
         if c == '"' {
             in_str = !in_str;
-            out[i] = ' ';
-        } else if in_str {
-            out[i] = ' ';
+            out.push(' ');
+            continue;
         }
-        i += 1;
+        if in_str {
+            for _ in 0..c.len_utf8() {
+                out.push(' ');
+            }
+        } else {
+            out.push(c);
+        }
     }
-    out.into_iter().collect()
+    debug_assert_eq!(out.len(), line.len(), "mask must preserve byte length");
+    out
 }
 
 /// Bare ALL_CAPS identifiers (constants like TASK_STATUS_DONE): not a call,
