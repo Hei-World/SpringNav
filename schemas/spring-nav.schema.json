@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SpringNav configuration",
+  "description": "Schema for .idea/spring-nav.json (the TOML form uses the same shape).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "aliases": {
+      "type": "object",
+      "description": "Explicit field-name / type-name -> target-type overrides. Highest priority.",
+      "additionalProperties": { "type": "string" },
+      "default": {}
+    },
+    "type-roles": {
+      "type": "object",
+      "description": "Class simple/FQCN -> role override. Priority below aliases.",
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["controller", "service", "service_impl", "mapper", "entity", "other"]
+      },
+      "default": {}
+    },
+    "impl-patterns": {
+      "type": "object",
+      "description": "Interface role -> implementation filename glob patterns.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "default": {
+        "service": ["*ServiceImpl", "*Impl"],
+        "mapper": ["*Mapper", "*Dao", "*Repository"]
+      }
+    }
+  }
+}

@@ -1,0 +1,691 @@
+// Lightweight hand-written parser: line scanning + a small state machine + a
+// handful of regular expressions. No tree-sitter, no full AST (P-04).
+// Only metadata is emitted; the source text is never retained.
+
+use crate::model::*;
+use crate::scanner::Candidate;
+use regex::Regex;
+use std::path::Path;
+use std::sync::LazyLock;
+
+static RE_PACKAGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*package\s+([\w.]+)\s*;").unwrap());
+
+static RE_CLASS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(class|interface|enum|record)\s+(\w+)\b(.*)$").unwrap());
+
+static RE_KW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:extends|implements)\b").unwrap());
+
+static RE_ANNOTATION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^@([\w.]+)(?:\s*\((.*)\))?\s*$").unwrap());
+
+static RE_QUOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"["']([^"']*)["']"#).unwrap());
+
+static RE_METHOD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^\s*(?:(?:public|private|protected|static|final|abstract|synchronized|native|default|strictfp|transient|volatile)\s+|<[^>]+>\s+)*([A-Za-z_$][\w$<>\[\],.?]*)\s+(\w+)\s*\(",
+    )
+    .unwrap()
+});
+
+static RE_PARAM_ANN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"@[\w.]+(?:\([^)]*\))?").unwrap());
+
+static RE_CALL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\w+)\s*\.\s*(\w+)\s*\(").unwrap());
+
+static RE_METHOD_REF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bthis\s*::\s*(\w+)").unwrap());
+
+static RE_MAPPER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)<mapper\b[^>]*\bnamespace\s*=\s*["']([^"']+)["']"#).unwrap()
+});
+
+static RE_STMT_OPEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<(select|insert|update|delete)\b").unwrap());
+
+static RE_ID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\bid\s*=\s*["']([^"']+)["']"#).unwrap());
+
+const CONTROL: &[&str] = &[
+    "if", "for", "while", "switch", "catch", "try", "finally", "do", "else", "return",
+    "throw", "new", "case", "assert", "yield", "break", "continue", "synchronized",
+    "instanceof", "super", "this", "import", "package",
+];
+
+const MODIFIERS: &[&str] = &[
+    "public", "private", "protected", "static", "final", "transient", "volatile",
+    "default", "abstract", "synchronized", "native", "strictfp",
+];
+
+/// UTF-16-ish column for a byte offset inside `line`.
+pub fn col(line: &str, byte: usize) -> u32 {
+    let b = byte.min(line.len());
+    // `b` is always a char boundary (offsets come from ASCII tokens / regex).
+    line[..b].chars().count() as u32
+}
+
+fn is_ident(s: &str) -> bool {
+    let mut it = s.chars();
+    match it.next() {
+        Some(c) if c.is_alphabetic() || c == '_' || c == '$' => {}
+        _ => return false,
+    }
+    it.all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+}
+
+fn paren_balance(s: &str) -> i32 {
+    let mut d = 0i32;
+    let mut quote: Option<u8> = None;
+    for &b in s.as_bytes() {
+        if let Some(q) = quote {
+            if b == q {
+                quote = None;
+            }
+            continue;
+        }
+        match b {
+            b'"' | b'\'' => quote = Some(b),
+            b'(' => d += 1,
+            b')' => d -= 1,
+            _ => {}
+        }
+    }
+    d
+}
+
+/// Byte index of the ')' matching the '(' at `open`.
+fn matching_paren(s: &str, open: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut d = 1i32;
+    let mut quote: Option<u8> = None;
+    for i in open + 1..b.len() {
+        let c = b[i];
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            b'"' | b'\'' => quote = Some(c),
+            b'(' => d += 1,
+            b')' => {
+                d -= 1;
+                if d == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split by `delim` at top level (ignore delimiters nested in <>, (), []).
+fn split_top_level(s: &str, delim: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut d = 0i32;
+    let mut quote: Option<char> = None;
+    for c in s.chars() {
+        if let Some(q) = quote {
+            cur.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => {
+                quote = Some(c);
+                cur.push(c);
+            }
+            '<' | '(' | '[' => {
+                d += 1;
+                cur.push(c);
+            }
+            '>' | ')' | ']' => {
+                d -= 1;
+                cur.push(c);
+            }
+            _ if c == delim && d == 0 => {
+                out.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Reduce a type spelling (`List<String>`, `String[]`, `java.lang.Long`) to its
+/// simple name. Generics/arrays/variadics/wildcards are intentionally discarded.
+pub fn strip_to_simple(s: &str) -> String {
+    let mut t = s.trim().trim_matches(|c: char| {
+        c == '{' || c == '}' || c == ';' || c.is_whitespace()
+    });
+    if let Some(i) = t.find('<') {
+        t = &t[..i];
+    }
+    let mut t = t.trim();
+    while t.ends_with("[]") {
+        t = t[..t.len() - 2].trim_end();
+    }
+    if let Some(rest) = t.strip_suffix("...") {
+        t = rest.trim_end();
+    }
+    if let Some(rest) = t.strip_prefix("? extends ").or_else(|| t.strip_prefix("? super ")) {
+        t = rest.trim();
+    }
+    let last = t.rsplit('.').next().unwrap_or(t).trim();
+    last.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+        .collect()
+}
+
+fn find_top_level_eq(s: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    let mut d = 0i32;
+    for (i, c) in s.char_indices() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '<' | '(' | '[' => d += 1,
+            '>' | ')' | ']' => d -= 1,
+            '=' if d == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_annotation(t: &str) -> Option<Annotation> {
+    let caps = RE_ANNOTATION.captures(t)?;
+    let name = caps.get(1)?.as_str().rsplit('.').next()?.to_string();
+    let mut paths = Vec::new();
+    if let Some(args) = caps.get(2) {
+        for q in RE_QUOTED.captures_iter(args.as_str()) {
+            if let Some(m) = q.get(1) {
+                paths.push(m.as_str().to_string());
+            }
+        }
+    }
+    Some(Annotation { name, paths })
+}
+
+fn collect_paths(anns: &[Annotation]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in anns {
+        let n = a.name.as_str();
+        if !matches!(
+            n,
+            "RequestMapping"
+                | "GetMapping"
+                | "PostMapping"
+                | "PutMapping"
+                | "DeleteMapping"
+                | "PatchMapping"
+        ) {
+            continue;
+        }
+        for p in &a.paths {
+            if p.starts_with('/') || p.starts_with("${") || p.contains('{') {
+                out.push(p.clone());
+            }
+        }
+    }
+    out
+}
+
+fn parse_class_decl(line: &str) -> Option<(String, bool, Vec<String>, usize)> {
+    let caps = RE_CLASS.captures(line)?;
+    let kind = caps.get(1)?.as_str();
+    let name = caps.get(2)?.as_str().to_string();
+    let tail = caps.get(3).map(|m| m.as_str()).unwrap_or("");
+    let cleaned = RE_KW.replace_all(tail, " ");
+    let mut supers = Vec::new();
+    for part in cleaned.split(',') {
+        let s = strip_to_simple(part);
+        if !s.is_empty() && s != name {
+            supers.push(s);
+        }
+    }
+    Some((name, kind == "interface", supers, caps.get(2)?.start()))
+}
+
+fn parse_params(s: &str) -> Vec<String> {
+    let mut types = Vec::new();
+    for part in split_top_level(s, ',') {
+        let cleaned = RE_PARAM_ANN.replace_all(part.trim(), "");
+        let words: Vec<&str> = cleaned
+            .split_whitespace()
+            .filter(|w| !MODIFIERS.contains(w))
+            .collect();
+        if words.is_empty() {
+            continue;
+        }
+        let ty = if words.len() >= 2 {
+            words[words.len() - 2]
+        } else {
+            words[0]
+        };
+        types.push(strip_to_simple(ty));
+    }
+    types
+}
+
+fn count_args(line: &str, open: usize) -> usize {
+    let b = line.as_bytes();
+    let mut d = 1i32;
+    let mut commas = 0usize;
+    let mut saw = false;
+    let mut quote: Option<u8> = None;
+    for i in open + 1..b.len() {
+        let c = b[i];
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            b'"' | b'\'' => {
+                quote = Some(c);
+                saw = true;
+            }
+            b'(' | b'<' | b'[' => {
+                d += 1;
+                saw = true;
+            }
+            b')' | b'>' | b']' => {
+                d -= 1;
+                if d == 0 {
+                    break;
+                }
+            }
+            b',' if d == 1 => {
+                commas += 1;
+                saw = true;
+            }
+            _ => {
+                if !c.is_ascii_whitespace() {
+                    saw = true;
+                }
+            }
+        }
+    }
+    if saw {
+        commas + 1
+    } else {
+        0
+    }
+}
+
+fn try_method_decl(
+    first_line: &str,
+    lines: &[&str],
+    i: usize,
+    uri: &str,
+    class_name: &str,
+) -> Option<(MethodDecl, usize)> {
+    let caps = RE_METHOD.captures(first_line)?;
+    let name = caps.get(2)?.as_str().to_string();
+    let open = caps.get(0)?.end().checked_sub(1)?;
+    let prefix = &first_line[..open];
+    for w in prefix.split_whitespace() {
+        if CONTROL.contains(&w) {
+            return None;
+        }
+    }
+    if name == class_name {
+        return None; // constructor
+    }
+
+    let mut joined = first_line.to_string();
+    let mut consumed = 1usize;
+    while paren_balance(&joined) > 0 && i + consumed < lines.len() {
+        joined.push(' ');
+        joined.push_str(lines[i + consumed].trim_end_matches('\r'));
+        consumed += 1;
+    }
+    let close = matching_paren(&joined, open)?;
+    let params = &joined[open + 1..close];
+    let after = joined[close + 1..].trim();
+    if !(after.is_empty()
+        || after.starts_with('{')
+        || after.starts_with(';')
+        || after.starts_with("throws"))
+    {
+        return None;
+    }
+    let param_types = parse_params(params);
+    let name_byte = caps.get(2)?.start();
+    Some((
+        MethodDecl {
+            name,
+            param_types,
+            loc: Loc::new(uri, i as u32, col(first_line, name_byte)),
+            paths: Vec::new(),
+        },
+        consumed,
+    ))
+}
+
+fn try_field_decl(line: &str, line_no: u32, uri: &str) -> Option<FieldDecl> {
+    let t = line.trim();
+    if !t.ends_with(';') || t.contains('(') || t.contains(')') {
+        return None;
+    }
+    if t.starts_with("return") || t.starts_with("throw") || t.starts_with("import") {
+        return None;
+    }
+    let body = t.trim_end_matches(';');
+    let cut = match find_top_level_eq(body) {
+        Some(i) => &body[..i],
+        None => body,
+    };
+    let words: Vec<&str> = cut.split_whitespace().collect();
+    if words.len() < 2 {
+        return None;
+    }
+    let name = *words.last()?;
+    if !is_ident(name) || CONTROL.contains(&words[0]) {
+        return None;
+    }
+    let type_words: Vec<&str> = words[..words.len() - 1]
+        .iter()
+        .copied()
+        .filter(|w| !MODIFIERS.contains(w))
+        .collect();
+    if type_words.is_empty() {
+        return None;
+    }
+    let type_simple = strip_to_simple(&type_words.join(" "));
+    if type_simple.is_empty() {
+        return None;
+    }
+    let byte = line.rfind(name).unwrap_or(0);
+    Some(FieldDecl {
+        name: name.to_string(),
+        type_simple,
+        loc: Loc::new(uri, line_no, col(line, byte)),
+    })
+}
+
+fn scan_calls(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
+    for caps in RE_CALL.captures_iter(line) {
+        let field = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let method = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        if field.is_empty() || method.is_empty() {
+            continue;
+        }
+        let open = caps.get(0).unwrap().end().saturating_sub(1);
+        let method_start = caps.get(2).unwrap().start();
+        let field_start = caps.get(1).unwrap().start();
+        model.calls.push(CallSite {
+            field: field.to_string(),
+            method: method.to_string(),
+            arg_count: count_args(line, open),
+            loc: Loc::new(uri, line_no, col(line, method_start)),
+            field_loc: Loc::new(uri, line_no, col(line, field_start)),
+            owner_method: None,
+        });
+    }
+}
+
+fn scan_method_refs(line: &str, line_no: u32, uri: &str, model: &mut FileModel) {
+    for caps in RE_METHOD_REF.captures_iter(line) {
+        let m = caps.get(1).unwrap();
+        model.method_refs.push(MethodRef {
+            name: m.as_str().to_string(),
+            loc: Loc::new(uri, line_no, col(line, m.start())),
+        });
+    }
+}
+
+fn assign_owners(model: &mut FileModel) {
+    for cs in &mut model.calls {
+        let mut best: Option<usize> = None;
+        for (idx, m) in model.methods.iter().enumerate() {
+            if m.loc.line <= cs.loc.line {
+                match best {
+                    Some(b) if model.methods[b].loc.line >= m.loc.line => {}
+                    _ => best = Some(idx),
+                }
+            }
+        }
+        cs.owner_method = best;
+    }
+}
+
+fn relevant_java(path: &str, file_name: &str, content: &str) -> bool {
+    let stem = file_name.trim_end_matches(".java");
+    for suf in [
+        "Controller",
+        "Service",
+        "ServiceImpl",
+        "Impl",
+        "Mapper",
+        "Dao",
+        "Repository",
+        "Client",
+        "Feign",
+    ] {
+        if stem.ends_with(suf) {
+            return true;
+        }
+    }
+    for a in [
+        "@RestController",
+        "@Controller",
+        "@Service",
+        "@Mapper",
+        "@Repository",
+        "@TableName",
+        "@Entity",
+        "@Data",
+    ] {
+        if content.contains(a) {
+            return true;
+        }
+    }
+    let p = path.replace('\\', "/");
+    for seg in [
+        "/domain/",
+        "/entity/",
+        "/entities/",
+        "/model/",
+        "/pojo/",
+        "/dto/",
+        "/vo/",
+        "/bean/",
+    ] {
+        if p.contains(seg) {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn parse_java(c: &Candidate) -> Option<FileModel> {
+    let file_name = Path::new(&c.path)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !relevant_java(&c.path, &file_name, &c.content) {
+        return None;
+    }
+
+    let lines: Vec<&str> = c.content.lines().collect();
+    let mut model = FileModel::new(c.uri.clone(), c.path.clone(), FileKind::Java);
+    let mut pending: Vec<Annotation> = Vec::new();
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let line = lines[i].trim_end_matches('\r');
+        let t = line.trim();
+
+        if t.is_empty()
+            || t.starts_with("//")
+            || t.starts_with('*')
+            || t.starts_with("/*")
+            || t.starts_with("*/")
+        {
+            i += 1;
+            continue;
+        }
+        if let Some(caps) = RE_PACKAGE.captures(line) {
+            model.package = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+            i += 1;
+            continue;
+        }
+        if t.starts_with("import ") {
+            i += 1;
+            continue;
+        }
+        if t.starts_with('@') {
+            if let Some(a) = parse_annotation(t) {
+                pending.push(a);
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some((name, is_iface, supers, name_byte)) = parse_class_decl(line) {
+            if model.class_name.is_empty() {
+                model.class_name = name;
+                model.is_interface = is_iface;
+                model.supers = supers;
+                model.class_annotations = std::mem::take(&mut pending);
+                model.class_paths = collect_paths(&model.class_annotations);
+                model.class_loc = Loc::new(&c.uri, i as u32, col(line, name_byte));
+            } else {
+                pending.clear();
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some((mut md, consumed)) =
+            try_method_decl(line, &lines, i, &c.uri, &model.class_name)
+        {
+            md.paths = collect_paths(&pending);
+            model.methods.push(md);
+            pending.clear();
+            // Calls / refs may appear on the declaration line itself.
+            scan_calls(line, i as u32, &c.uri, &mut model);
+            scan_method_refs(line, i as u32, &c.uri, &mut model);
+            i += consumed;
+            continue;
+        }
+
+        if let Some(f) = try_field_decl(line, i as u32, &c.uri) {
+            model.fields.push(f);
+            pending.clear();
+            scan_method_refs(line, i as u32, &c.uri, &mut model);
+            i += 1;
+            continue;
+        }
+
+        scan_calls(line, i as u32, &c.uri, &mut model);
+        scan_method_refs(line, i as u32, &c.uri, &mut model);
+        i += 1;
+    }
+
+    if model.class_name.is_empty() {
+        return None;
+    }
+    model.fqcn = if model.package.is_empty() {
+        model.class_name.clone()
+    } else {
+        format!("{}.{}", model.package, model.class_name)
+    };
+    assign_owners(&mut model);
+    Some(model)
+}
+
+fn byte_to_lc(content: &str, b: usize) -> (u32, u32) {
+    let mut start = 0usize;
+    let mut ln = 0u32;
+    for line in content.split('\n') {
+        let end = start + line.len();
+        if b <= end + 1 {
+            let rel = b.saturating_sub(start).min(line.len());
+            return (ln, line[..rel].chars().count() as u32);
+        }
+        start = end + 1;
+        ln += 1;
+    }
+    (ln, 0)
+}
+
+pub fn parse_xml(c: &Candidate) -> Option<FileModel> {
+    if !c.content.contains("<mapper") {
+        return None;
+    }
+    let mut model = FileModel::new(c.uri.clone(), c.path.clone(), FileKind::Xml);
+
+    if let Some(caps) = RE_MAPPER.captures(&c.content) {
+        model.xml_namespace = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+        let start = caps.get(0).unwrap().start();
+        let end = c.content[start..]
+            .find('>')
+            .map(|d| start + d + 1)
+            .unwrap_or(c.content.len().min(start + caps.get(0).unwrap().len()));
+        let (sl, sc) = byte_to_lc(&c.content, start);
+        let (el, ec) = byte_to_lc(&c.content, end);
+        model.namespace_loc = Some(Loc::new(&c.uri, sl, sc));
+        model.namespace_span = Some((sc, if el == sl { ec } else { u32::MAX / 4 }));
+    }
+
+    let lines: Vec<&str> = c.content.lines().collect();
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = lines[i].trim_end_matches('\r');
+        if let Some(caps) = RE_STMT_OPEN.captures(line) {
+            let start_byte = caps.get(0).unwrap().start();
+            let start_line = i;
+            let mut buf = line.to_string();
+            let mut j = i;
+            while !buf.contains('>') && j + 1 < lines.len() {
+                j += 1;
+                buf.push(' ');
+                buf.push_str(lines[j].trim_end_matches('\r'));
+            }
+            let tag_end = buf.find('>').unwrap_or(buf.len().saturating_sub(1));
+            let tag = &buf[..tag_end.min(buf.len())];
+            if let Some(idc) = RE_ID.captures(tag) {
+                let id = idc.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                let start_col = col(line, start_byte);
+                let end_col = if j == start_line {
+                    col(line, (tag_end + 1).min(line.len()))
+                } else {
+                    line.chars().count() as u32
+                };
+                model.xml_stmts.push(XmlStmt {
+                    namespace: model.xml_namespace.clone(),
+                    id,
+                    loc: Loc::new(&c.uri, start_line as u32, start_col),
+                    span: (start_col, end_col.max(start_col + 1)),
+                });
+            }
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+
+    if model.xml_stmts.is_empty() && model.xml_namespace.is_empty() {
+        return None;
+    }
+    Some(model)
+}

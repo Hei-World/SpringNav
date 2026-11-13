@@ -1,0 +1,144 @@
+// Compact metadata-only model. No file contents, no AST, no source text are kept.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Role {
+    Controller,
+    Service,
+    ServiceImpl,
+    Mapper,
+    Entity,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FileKind {
+    Java,
+    Xml,
+}
+
+/// A canonical symbol position. `line` and `character` are 0-based, with
+/// `character` measured in UTF-16 code units (VS Code semantics). For code made
+/// of identifiers this equals the count of Rust `char`s up to that byte offset.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Loc {
+    pub uri: String,
+    pub line: u32,
+    pub character: u32,
+}
+
+impl Loc {
+    pub fn new(uri: &str, line: u32, character: u32) -> Self {
+        Loc {
+            uri: uri.to_string(),
+            line,
+            character,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Annotation {
+    pub name: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MethodDecl {
+    pub name: String,
+    pub param_types: Vec<String>,
+    pub loc: Loc,
+    /// Mapping paths declared directly on the method (@GetMapping etc.).
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FieldDecl {
+    pub name: String,
+    pub type_simple: String,
+    pub loc: Loc,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CallSite {
+    pub field: String,
+    pub method: String,
+    pub arg_count: usize,
+    /// Position of the invoked method name.
+    pub loc: Loc,
+    /// Position of the receiver expression (field / variable).
+    pub field_loc: Loc,
+    /// Index into FileModel.methods of the enclosing method.
+    pub owner_method: Option<usize>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MethodRef {
+    pub name: String,
+    pub loc: Loc,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct XmlStmt {
+    pub namespace: String,
+    pub id: String,
+    pub loc: Loc,
+    /// Span (start,end) of the opening tag on `loc.line`.
+    pub span: (u32, u32),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FileModel {
+    pub uri: String,
+    pub path: String,
+    pub kind: FileKind,
+    // Java class metadata
+    pub package: String,
+    pub class_name: String,
+    pub fqcn: String,
+    pub is_interface: bool,
+    pub class_loc: Loc,
+    pub class_annotations: Vec<Annotation>,
+    pub class_paths: Vec<String>,
+    pub supers: Vec<String>,
+    pub methods: Vec<MethodDecl>,
+    pub fields: Vec<FieldDecl>,
+    pub calls: Vec<CallSite>,
+    pub method_refs: Vec<MethodRef>,
+    // Role is assigned while building the index (config may override it).
+    pub role: Role,
+    // XML mapper metadata
+    pub xml_namespace: String,
+    pub xml_stmts: Vec<XmlStmt>,
+    pub namespace_loc: Option<Loc>,
+    pub namespace_span: Option<(u32, u32)>,
+}
+
+impl Default for FileKind {
+    fn default() -> Self {
+        FileKind::Java
+    }
+}
+
+impl Default for Role {
+    fn default() -> Self {
+        Role::Other
+    }
+}
+
+impl FileModel {
+    pub fn new(uri: String, path: String, kind: FileKind) -> Self {
+        FileModel {
+            uri,
+            path,
+            kind,
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Span {
+    pub start: u32,
+    pub end: u32,
+    pub loc: Loc,
+}

@@ -1,0 +1,13 @@
+.vscode/**
+.vscode-test/**
+src/**
+rust/**
+scripts/**
+test/**
+.github/**
+docs/**
+.gitignore
+tsconfig.json
+**/*.map
+**/.DS_Store
+Cargo.lock

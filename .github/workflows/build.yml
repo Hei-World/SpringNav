@@ -1,0 +1,71 @@
+name: Build native addons
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['rust/**', '.github/workflows/build.yml']
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: spring-nav.linux-x64-gnu.node
+            lib: libspring_nav.so
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            name: spring-nav.linux-arm64-gnu.node
+            lib: libspring_nav.so
+            cross: true
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            name: spring-nav.linux-x64-musl.node
+            lib: libspring_nav.so
+            musl: true
+          - os: macos-13
+            target: x86_64-apple-darwin
+            name: spring-nav.darwin-x64.node
+            lib: libspring_nav.dylib
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: spring-nav.darwin-arm64.node
+            lib: libspring_nav.dylib
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: spring-nav.win32-x64-msvc.node
+            lib: spring_nav.dll
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            name: spring-nav.win32-arm64-msvc.node
+            lib: spring_nav.dll
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Cross linker (aarch64 gnu)
+        if: matrix.cross
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: musl tools
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          cd rust
+          cargo build --release --target ${{ matrix.target }}
+          mkdir -p ../native
+          cp target/${{ matrix.target }}/release/${{ matrix.lib }} ../native/${{ matrix.name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: native/${{ matrix.name }}

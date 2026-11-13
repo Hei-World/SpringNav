@@ -1,0 +1,8 @@
+node_modules/
+out/
+rust/target/
+native/*.node
+*.vsix
+.vscode-test/
+*.log
+.DS_Store

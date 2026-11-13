@@ -1,0 +1,33 @@
+# SpringNav configuration example.
+# Place it at <project-root>/.idea/spring-nav.toml (or .idea/spring-nav.json).
+#
+# Rule priority: aliases > type-roles > default naming conventions.
+
+# ---------------------------------------------------------------------------
+# 1) Explicit aliases (highest priority).
+#    Left side: a field name OR a type/interface name.
+#    Right side: the target type (simple name or fully-qualified name).
+#    Use this when a field's type cannot be inferred from its declaration, or
+#    to pin an interface to one specific implementation.
+# ---------------------------------------------------------------------------
+[aliases]
+# "userService" = "ISysUserService"
+# "ISysUserService" = "SysUserServiceImpl"
+
+# ---------------------------------------------------------------------------
+# 2) Role overrides.
+#    Key: a class simple name or a fully-qualified class name.
+#    Value: controller | service | service_impl | mapper | entity | other
+# ---------------------------------------------------------------------------
+[type-roles]
+# "SysConfigController" = "controller"
+# "com.ruoyi.system.service.ISysUserService" = "service"
+
+# ---------------------------------------------------------------------------
+# 3) Implementation naming patterns.
+#    Key: an interface role (service | mapper | controller | ...).
+#    Value: glob patterns matched against implementation class simple names.
+# ---------------------------------------------------------------------------
+[impl-patterns]
+service = ["*ServiceImpl", "*Impl"]
+mapper = ["*Mapper", "*Dao", "*Repository"]
