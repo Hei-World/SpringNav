@@ -42,6 +42,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # musl 目标不支持 cdylib（musl libc 无动态加载），故无 linux musl 变体
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             name: spring-nav.linux-x64-gnu.node
@@ -51,38 +52,32 @@ jobs:
             name: spring-nav.linux-arm64-gnu.node
             lib: libspring_nav.so
             cross: true
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            name: spring-nav.linux-x64-musl.node
-            lib: libspring_nav.so
-            musl: true
-          - os: macos-13
-            target: x86_64-apple-darwin
-            name: spring-nav.darwin-x64.node
-            lib: libspring_nav.dylib
-          - os: macos-14
+          # GitHub 已退役 Intel runner：arm64 host 上 SN_TARGET 交叉出 x86_64
+          - os: macos-latest
             target: aarch64-apple-darwin
             name: spring-nav.darwin-arm64.node
             lib: libspring_nav.dylib
+            extra_target: x86_64-apple-darwin
+            extra_name: spring-nav.darwin-x64.node
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: spring-nav.win32-x64-msvc.node
             lib: spring_nav.dll
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-            name: spring-nav.win32-arm64-msvc.node
-            lib: spring_nav.dll
+            extra_target: aarch64-pc-windows-msvc
+            extra_name: spring-nav.win32-arm64-msvc.node
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - name: Install cross target toolchain
+        if: matrix.extra_target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.extra_target }}
       - name: Cross linker (aarch64 gnu)
         if: matrix.cross
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-      - name: musl tools
-        if: matrix.musl
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build
         shell: bash
         env:
@@ -92,10 +87,21 @@ jobs:
           cargo build --release --target ${{ matrix.target }}
           mkdir -p ../native
           cp target/${{ matrix.target }}/release/${{ matrix.lib }} ../native/${{ matrix.name }}
+      - name: Build extra target (cross)
+        if: matrix.extra_target
+        shell: bash
+        run: bash scripts/build-native.sh
+        env:
+          SN_TARGET: ${{ matrix.extra_target }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: native/${{ matrix.name }}
+      - uses: actions/upload-artifact@v4
+        if: matrix.extra_target
+        with:
+          name: ${{ matrix.extra_name }}
+          path: native/${{ matrix.extra_name }}
 
   # VSIX 是平台无关容器：native/index.js 运行时按 process.arch 选择 .node，
   # 一个 VSIX 打入全部 7 个架构的二进制，全平台通用。
