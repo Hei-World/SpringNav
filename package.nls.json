@@ -3,10 +3,9 @@
   "command.searchByPath": "SpringNav: Search by URL path",
   "command.reindex": "SpringNav: Reload Index",
   "command.reindexFolder": "SpringNav: Rebuild This Project's Index",
-  "command.goToImplementation": "Go to Java Implementation",
+  "command.goToDefinition": "Go to Java Definition",
   "command.goToReference": "Go to Java Reference",
   "config.title": "SpringNav",
-  "config.defaultDirection.description": "Go to Definition semantics for Ctrl/Cmd+Click: a reference jumps to its declaration (method call -> method, get/set -> entity field, mapper -> XML, Service interface -> Impl). When nothing matches, falls back to References.",
-  "config.fallbackOnEmpty.description": "When the requested direction has no match, automatically fall back to the opposite direction for one level.",
-  "command.goToDefinition": "Go to Java Definition"
+  "config.defaultDirection.description": "Jump direction used by Ctrl/Cmd+Click (Go to Definition entry): down = Go to Java Definition (reference -> declaration), up = Go to Java Reference.",
+  "config.fallbackOnEmpty.description": "When a direction (definition or reference) has no match, automatically fall back to the opposite direction for one level."
 }

@@ -3,10 +3,9 @@
   "command.searchByPath": "SpringNav: 按接口路径搜索",
   "command.reindex": "SpringNav: 重新加载索引",
   "command.reindexFolder": "SpringNav: 重建此项目索引",
-  "command.goToImplementation": "转到Java实现",
+  "command.goToDefinition": "转到 Java 定义",
   "command.goToReference": "转到 Java 引用",
   "config.title": "SpringNav",
-  "config.defaultDirection.description": "Ctrl/Cmd+点击采用「转到定义」语义：引用跳到其声明（方法调用→定义、get/set→实体字段、mapper→XML、Service 接口→实现）。无匹配时自动回退到「转到引用」。",
-  "config.fallbackOnEmpty.description": "指定方向没有匹配结果时，是否自动回退到相反方向一级。",
-  "command.goToDefinition": "转到 Java 定义"
+  "config.defaultDirection.description": "Ctrl/Cmd+点击（转到定义入口）采用的跳转方向：down = 转到 Java 定义（引用→声明），up = 转到 Java 引用。",
+  "config.fallbackOnEmpty.description": "指定方向（定义/引用）没有匹配结果时，是否自动回退到相反方向一级。"
 }
