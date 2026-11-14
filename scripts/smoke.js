@@ -908,10 +908,146 @@ function check(name, fn) {
     return `files ${before.files} -> ${r.files}`;
   });
 
+  // ---------------------------------------------------------------------
+  // A2 / A3 / A6a regression: a separate fixture so the fixed-count
+  // assertions above (UP-01/02, RS-01) stay untouched.
+  // ---------------------------------------------------------------------
+  const root2 = fs.mkdtempSync(path.join(os.tmpdir(), 'springnav-ctx-fixture-'));
+  const w2 = (rel, content) => {
+    const p = path.join(root2, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  };
+  const p2 = (rel, needle, offset = 0) => {
+    const lines = fs.readFileSync(path.join(root2, rel), 'utf8').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const idx = lines[i].indexOf(needle);
+      if (idx !== -1) return { line: i, character: idx + offset, text: lines[i] };
+    }
+    throw new Error(`needle not found: ${needle} in ${rel}`);
+  };
+  const r2 = (rel, needle, offset = 0) => {
+    const p = p2(rel, needle, offset);
+    return addon.resolveDefinition(addon.uriForPath(path.join(root2, rel)), p.line, p.character, p.text);
+  };
+  const has2 = (out, rel) => out.some((l) => l.uri.includes(rel));
+
+  w2('pom.xml', '<project/>');
+  // A2: two same-named classes; the controller explicitly imports the domain one.
+  w2('src/main/java/com/example/domain/AppConst.java',
+    'package com.example.domain;\npublic class AppConst {\n    public static final String TOKEN_PREFIX = "tok";\n    public static void helper() {}\n}\n');
+  w2('src/main/java/com/example/vo/AppConst.java',
+    'package com.example.vo;\npublic class AppConst {\n    public static final String TOKEN_PREFIX = "vo-tok";\n    public static void helper() {}\n}\n');
+  const ctxCtrl = 'src/main/java/com/example/controller/ConstController.java';
+  w2(ctxCtrl,
+    'package com.example.controller;\nimport com.example.domain.AppConst;\npublic class ConstController {\n    void f() {\n        String a = AppConst.TOKEN_PREFIX;\n        AppConst.helper();\n        Runnable r = AppConst::helper;\n        AppConst c = null;\n    }\n}\n');
+
+  // A3: three-level inheritance; nearCall exists in BOTH MidBaseService and
+  // GrandBaseService. Names end in "Service" so they pass relevance filtering
+  // (real projects name base classes BaseService / BaseController anyway).
+  const gb = 'src/main/java/com/example/base/GrandBaseService.java';
+  const mb = 'src/main/java/com/example/base/MidBaseService.java';
+  const ds = 'src/main/java/com/example/base/DeepService.java';
+  w2(gb, 'package com.example.base;\npublic class GrandBaseService {\n    public void deepCall() {}\n    public void nearCall() {}\n}\n');
+  w2(mb, 'package com.example.base;\npublic class MidBaseService extends GrandBaseService {\n    public void nearCall() {}\n}\n');
+  w2(ds, 'package com.example.base;\npublic class DeepService extends MidBaseService {\n    void f() {\n        this.deepCall();\n        this.nearCall();\n    }\n}\n');
+
+  // A6a: injected interface field + @Qualifier bean name.
+  const iface = 'src/main/java/com/example/service/IOps.java';
+  const opsImpl = 'src/main/java/com/example/service/impl/OpsImpl.java';
+  const inj = 'src/main/java/com/example/controller/InjectController.java';
+  w2(iface, 'package com.example.service;\npublic interface IOps {\n    void run();\n}\n');
+  w2(opsImpl, 'package com.example.service.impl;\nimport com.example.service.IOps;\npublic class OpsImpl implements IOps {\n    public void run() {}\n}\n');
+  w2(inj,
+    'package com.example.controller;\nimport com.example.service.IOps;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.beans.factory.annotation.Qualifier;\npublic class InjectController {\n    @Autowired\n    private IOps ops;\n    @Qualifier("opsImpl")\n    private IOps other;\n}\n');
+
+  await checkAsync('CTX-00 context fixture indexed', async () => {
+    const r = await addon.buildIndex([root2]);
+    if (!r.files || r.files < 8) throw new Error('files=' + r.files);
+    return `files=${r.files}`;
+  });
+
+  check('A2-01 constant ref resolves ONLY the imported same-named class', () => {
+    const out = r2(ctxCtrl, 'TOKEN_PREFIX');
+    if (!has2(out, 'domain/AppConst.java')) throw new Error('domain missing: ' + JSON.stringify(out));
+    if (has2(out, 'vo/AppConst.java')) throw new Error('vo/AppConst leaked into results');
+    return `-> ${out.length} location(s)`;
+  });
+  check('A2-02 static call resolves ONLY the imported same-named class', () => {
+    const out = r2(ctxCtrl, 'AppConst.helper()', 9);
+    if (!has2(out, 'domain/AppConst.java')) throw new Error('domain missing: ' + JSON.stringify(out));
+    if (has2(out, 'vo/AppConst.java')) throw new Error('vo/AppConst leaked into results');
+    return `-> ${out.length} location(s)`;
+  });
+  check('A2-03 method reference resolves ONLY the imported same-named class', () => {
+    const out = r2(ctxCtrl, 'AppConst::helper', 10);
+    if (!has2(out, 'domain/AppConst.java')) throw new Error('domain missing: ' + JSON.stringify(out));
+    if (has2(out, 'vo/AppConst.java')) throw new Error('vo/AppConst leaked into results');
+    return `-> ${out.length} location(s)`;
+  });
+  check('A2-04 type-name click resolves ONLY the imported same-named class', () => {
+    const out = r2(ctxCtrl, 'AppConst c');
+    if (!has2(out, 'domain/AppConst.java')) throw new Error('domain missing: ' + JSON.stringify(out));
+    if (has2(out, 'vo/AppConst.java')) throw new Error('vo/AppConst leaked into results');
+    return `-> ${out.length} location(s)`;
+  });
+
+  check('A3-01 this.call() reaches the GRANDPARENT method', () => {
+    const out = r2(ds, 'this.deepCall()', 5);
+    if (!has2(out, 'GrandBaseService.java')) throw new Error('GrandBaseService missing: ' + JSON.stringify(out));
+    return `-> ${out.length} location(s)`;
+  });
+  check('A3-02 nearest override wins (MidBaseService, not GrandBaseService)', () => {
+    const out = r2(ds, 'this.nearCall()', 5);
+    if (!has2(out, 'MidBaseService.java')) throw new Error('MidBaseService missing: ' + JSON.stringify(out));
+    if (has2(out, 'GrandBaseService.java')) throw new Error('GrandBaseService.nearCall leaked (no nearest-first)');
+    return `-> ${out.length} location(s)`;
+  });
+
+  check('A6a-01 @Autowired interface field -> sole implementation', () => {
+    const out = r2(inj, 'private IOps ops', 13);
+    if (!has2(out, 'OpsImpl.java')) throw new Error('OpsImpl missing: ' + JSON.stringify(out));
+    return `-> ${out.length} location(s)`;
+  });
+  check('A6a-02 @Qualifier bean name -> class declaration', () => {
+    const out = r2(inj, '"opsImpl"', 1);
+    if (!has2(out, 'OpsImpl.java')) throw new Error('OpsImpl missing: ' + JSON.stringify(out));
+    return `-> ${out.length} location(s)`;
+  });
+
+  await checkAsync('A6a-03 injected-field edge invalidates & restores with the impl', async () => {
+    const implPath = path.join(root2, opsImpl);
+    const original = fs.readFileSync(implPath, 'utf8');
+    fs.writeFileSync(implPath, original
+      .replace('implements IOps', 'implements Runnable')
+      .replace('class OpsImpl', 'class UnrelatedThing'));
+    addon.updateFile(addon.uriForPath(implPath));
+    const dropped = r2(inj, 'private IOps ops', 13);
+    fs.writeFileSync(implPath, original);
+    addon.updateFile(addon.uriForPath(implPath));
+    const restored = r2(inj, 'private IOps ops', 13);
+    if (has2(dropped, 'OpsImpl.java')) throw new Error('stale edge after impl changed: ' + JSON.stringify(dropped));
+    if (!has2(restored, 'OpsImpl.java')) throw new Error('edge not restored: ' + JSON.stringify(restored));
+    return 'dropped then restored';
+  });
+
+  await checkAsync('A6a-04 qualifier edge invalidates when the named class changes', async () => {
+    const implPath = path.join(root2, opsImpl);
+    const original = fs.readFileSync(implPath, 'utf8');
+    fs.writeFileSync(implPath, original.replace('class OpsImpl', 'class RenamedOps'));
+    addon.updateFile(addon.uriForPath(implPath));
+    const out = r2(inj, '"opsImpl"', 1);
+    fs.writeFileSync(implPath, original);
+    addon.updateFile(addon.uriForPath(implPath));
+    if (has2(out, 'OpsImpl.java')) throw new Error('stale qualifier edge: ' + JSON.stringify(out));
+    return 'edge dropped';
+  });
+
   const failed = results.filter((r) => !r).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed`);
   fs.rmSync(root, { recursive: true, force: true });
   fs.rmSync(parent, { recursive: true, force: true });
+  fs.rmSync(root2, { recursive: true, force: true });
   process.exit(failed ? 1 : 0);
 })().catch((e) => {
   console.error('FATAL', e);

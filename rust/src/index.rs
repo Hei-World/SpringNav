@@ -314,7 +314,7 @@ pub(crate) fn find_methods(
                 }
             }
             for s in &index.files[fi].supers {
-                for si in resolve_type_files(index, s) {
+                for si in resolve_type_files_ctx(index, fi, s) {
                     if !visited.contains(&si) {
                         next.push(si);
                     }
@@ -570,7 +570,7 @@ pub(crate) fn find_lombok(
                 }
             }
             for s in &index.files[fi].supers {
-                for si in resolve_type_files(index, s) {
+                for si in resolve_type_files_ctx(index, fi, s) {
                     next.push(si);
                 }
             }
@@ -808,6 +808,10 @@ fn add_file_spans(index: &mut Index, fi: usize, uri: &str) {
                 mr.loc.clone(),
             ));
         }
+        for (val, loc) in &m.qualifier_refs {
+            let end = loc.character + val.chars().count() as u32;
+            pending.push((uri.to_string(), loc.line, loc.character, end, loc.clone()));
+        }
     } else {
         for st in &m.xml_stmts {
             pending.push((
@@ -995,14 +999,11 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
                 let mut field_based = false;
                 match cs.kind {
                     1 | 2 => {
-                        // this.x() / bare x(): current class, then supers.
-                        let mut scope = vec![fi];
-                        for s in &m.supers {
-                            if let Some(&sf) = index.by_fqcn.get(s) {
-                                scope.push(sf);
-                            }
-                        }
-                        targets = find_methods(index, &scope, &cs.method, Some(cs.arg_count));
+                        // this.x() / bare x(): find_methods already walks the
+                        // full inheritance chain level by level (BFS, visited
+                        // set, depth cap 8) — the nearest match wins. Passing
+                        // only the current file keeps that ordering intact.
+                        targets = find_methods(index, &[fi], &cs.method, Some(cs.arg_count));
                     }
                     _ => {
                         if let Some(t) = resolve_field_type(index, fi, &cs.field, cfg) {
@@ -1027,10 +1028,7 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
                                     v.method == Some(owner) && v.name == cs.field
                                 }).map(|v| v.type_simple.clone());
                                 if let Some(t) = ty {
-                                    let mut tfiles = resolve_type_files_ctx(index, fi, &t);
-                                    if tfiles.is_empty() {
-                                        tfiles = resolve_class(index, fi, &t);
-                                    }
+                                    let tfiles = resolve_type_files_ctx(index, fi, &t);
                                     if !tfiles.is_empty() {
                                         targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
                                         if targets.is_empty() {
@@ -1046,7 +1044,7 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
                             }
                             if !hit && cs.field.chars().next().is_some_and(|c| c.is_uppercase()) {
                                 // static call on a project class (same package / import / unique simple name)
-                                let tfiles = resolve_class(index, fi, &cs.field);
+                                let tfiles = resolve_type_files_ctx(index, fi, &cs.field);
                                 if !tfiles.is_empty() {
                                     targets = find_methods(index, &tfiles, &cs.method, Some(cs.arg_count));
                                 }
@@ -1168,15 +1166,9 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
     // Lombok accessors resolve to the FIELD declaration.
     for mr in &m.method_refs {
         let scope: Vec<usize> = if mr.class.is_empty() {
-            let mut s = vec![fi];
-            for sup in &m.supers {
-                if let Some(&sf) = index.by_fqcn.get(sup) {
-                    s.push(sf);
-                }
-            }
-            s
+            vec![fi]
         } else {
-            resolve_class(index, fi, &mr.class)
+            resolve_type_files_ctx(index, fi, &mr.class)
         };
         if scope.is_empty() {
             continue;
@@ -1224,7 +1216,7 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
                 }
             }
         } else {
-            for tf in resolve_class(index, fi, &fr.class) {
+            for tf in resolve_type_files_ctx(index, fi, &fr.class) {
                 if let Some(fd) = index.files[tf].fields.iter().find(|x| x.name == fr.name) {
                     out.push(k1(fr.loc.clone(), fd.loc.clone()));
                 }
@@ -1242,56 +1234,60 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
     }
 
     // (i) type references -> class declaration (click type -> entity class).
+    // Context-aware resolution avoids mixing same-named classes into the list.
     for tr in &m.type_refs {
-        let mut tfiles = resolve_type_files(index, &tr.name);
-        if tfiles.is_empty() {
-            tfiles = resolve_class(index, fi, &tr.name);
-        }
-        for tf in tfiles {
+        for tf in resolve_type_files_ctx(index, fi, &tr.name) {
             out.push(k1(tr.loc.clone(), index.files[tf].class_loc.clone()));
         }
     }
 
-    out
-}
+    // (j) @Autowired/@Resource/@Inject field declared on an interface ->
+    //     its sole implementation class. Ambiguous (0 or >1 impls) => no edge.
+    for f in &m.fields {
+        let injected = f
+            .annotations
+            .iter()
+            .any(|a| matches!(a.as_str(), "Autowired" | "Resource" | "Inject"));
+        if !injected {
+            continue;
+        }
+        let tfiles = resolve_type_files_ctx(index, fi, &f.type_simple);
+        if tfiles.len() != 1 || !index.files[tfiles[0]].is_interface {
+            continue;
+        }
+        let ti = tfiles[0];
+        cache_impls(index, ti, cfg);
+        let impls = find_impls(index, ti, cfg);
+        if impls.len() == 1 {
+            out.push(k2(f.loc.clone(), index.files[impls[0]].class_loc.clone()));
+        }
+    }
 
-/// Resolve a simple class name to project file indices for `fi`'s context:
-/// same package first, then explicit imports, then a unique project-wide
-/// simple name. Empty when the name is external (JDK / third-party).
-pub(crate) fn resolve_class(index: &Index, fi: usize, simple: &str) -> Vec<usize> {
-    let m = &index.files[fi];
-    let mut out: Vec<usize> = Vec::new();
-    let pkg = m
-        .fqcn
-        .rsplit_once('.')
-        .map(|(p, _)| p.to_string())
-        .unwrap_or_default();
-    if let Some(files) = index.by_package.get(&pkg) {
-        for &tf in files {
-            if tf != fi && index.files[tf].class_name == simple && !out.contains(&tf) {
-                out.push(tf);
+    // (k) @Qualifier("bean") / @Resource(name="bean") string -> class decl.
+    //     Exact simple name first, then Spring's default decapitalized bean
+    //     name. Only a UNIQUE match is linked; ambiguity yields no jump.
+    for (val, loc) in &m.qualifier_refs {
+        if val.is_empty()
+            || !val
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+        {
+            continue;
+        }
+        let mut cands = index.by_simple.get(val).cloned().unwrap_or_default();
+        if cands.is_empty() {
+            let mut chars: Vec<char> = val.chars().collect();
+            if let Some(c) = chars.first_mut() {
+                *c = c.to_ascii_uppercase();
             }
+            let pascal: String = chars.into_iter().collect();
+            cands = index.by_simple.get(&pascal).cloned().unwrap_or_default();
+        }
+        if cands.len() == 1 {
+            out.push(k2(loc.clone(), index.files[cands[0]].class_loc.clone()));
         }
     }
-    if out.is_empty() {
-        let suffix = format!(".{}", simple);
-        for imp in &m.imports {
-            if imp.as_str() == simple || imp.ends_with(&suffix) {
-                if let Some(&tf) = index.by_fqcn.get(imp.as_str()) {
-                    if !out.contains(&tf) {
-                        out.push(tf);
-                    }
-                }
-            }
-        }
-    }
-    if out.is_empty() {
-        if let Some(files) = index.by_simple.get(simple) {
-            if files.len() == 1 {
-                out.push(files[0]);
-            }
-        }
-    }
+
     out
 }
 

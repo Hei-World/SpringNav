@@ -181,6 +181,9 @@ pub struct FileModel {
     pub static_imports: Vec<(String, String)>,
     /// Field/constant references (`Class.CONST`, `this.field`).
     pub field_refs: Vec<FieldRef>,
+    /// `@Qualifier("bean")` / `@Resource(name = "bean")` string values with
+    /// their positions, for annotation-string navigation.
+    pub qualifier_refs: Vec<(String, Loc)>,
     // Role is assigned while building the index (config may override it).
     pub role: Role,
     // XML mapper metadata

@@ -971,6 +971,21 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             match annotation_prefix_len(trimmed) {
                 Some(n) => {
                     if let Some(a) = parse_annotation(&trimmed[..n]) {
+                        // A6a: record the quoted bean name in @Qualifier /
+                        // @Resource so its position becomes clickable. The
+                        // annotation prefix is blanked with EQUAL-LENGTH spaces
+                        // below, so byte offsets still match the original line.
+                        if matches!(a.name.as_str(), "Qualifier" | "Resource") {
+                            for q in RE_QUOTED.captures_iter(&trimmed[..n]) {
+                                if let Some(m) = q.get(1) {
+                                    let byte = leading + m.start();
+                                    model.qualifier_refs.push((
+                                        m.as_str().to_string(),
+                                        Loc::new(&c.uri, i as u32, col(raw_line, byte)),
+                                    ));
+                                }
+                            }
+                        }
                         pending.push(a);
                     }
                     let end = leading + n;

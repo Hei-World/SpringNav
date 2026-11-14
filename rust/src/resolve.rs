@@ -130,7 +130,7 @@ fn fallback_targets(
         } else if field.chars().next().is_some_and(|c| c.is_uppercase()) {
             // Static call on a project class (P1): same package / import /
             // unique simple name — mirrors the (a) index-time resolution.
-            let tfiles = crate::index::resolve_class(index, fi, field);
+            let tfiles = crate::index::resolve_type_files_ctx(index, fi, field);
             if !tfiles.is_empty() {
                 out.extend(find_methods(index, &tfiles, method, None));
             }
