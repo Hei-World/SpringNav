@@ -5,7 +5,13 @@ on:
   push:
     tags: ['v*']
   pull_request:
-    paths: ['rust/**', 'scripts/**', 'test/**', 'package.json', '.github/workflows/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Fast gate: Rust unit tests + clippy + JS smoke/harness regression.
@@ -104,7 +110,7 @@ jobs:
           path: native/${{ matrix.extra_name }}
 
   # VSIX 是平台无关容器：native/index.js 运行时按 process.arch 选择 .node，
-  # 一个 VSIX 打入全部 7 个架构的二进制，全平台通用。
+  # 一个 VSIX 打入全部 6 个架构的二进制，全平台通用。
   package:
     name: Package VSIX (all platforms)
     runs-on: ubuntu-latest

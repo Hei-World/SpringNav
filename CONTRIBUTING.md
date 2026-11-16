@@ -52,12 +52,47 @@ cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 - 加功能：`scripts/smoke.js` 至少覆盖正向跳转、反向引用、歧义不跳三种情况；涉及跨文件边时补「改文件 → 边失效 → 恢复」的增量断言。
 - 涉及解析/索引的改动，请在 PR 中附上本地基线：全量索引耗时、查询耗时、增量耗时、100 次重建后的 RSS 与索引计数器（与 README「测试与性能基线」对比）。
 
-## 提交与 PR
+## 分支模型
+
+- `master` 是唯一长期分支，始终保持可构建、可发布；**不设 `develop`**，避免双分支同步成本。
+- 功能与修复使用短分支，合并后自动删除：
+  - `feat/<简述>` 新功能
+  - `fix/<简述>` 修复
+  - `docs/<简述>` 文档
+  - `chore/<简述>` 构建、依赖、CI
+- 发布通过 `v<version>` tag 触发，不为发布单独开分支。
+
+## 其他人如何提交代码并合并
+
+外部贡献者没有仓库写权限，按 Fork + Pull Request 流程：
+
+1. **Fork**：打开 <https://github.com/Hei-World/SpringNav>，点右上角 `Fork`，得到自己的副本。
+2. **克隆并同步**：
+
+   ```bash
+   git clone https://github.com/<你的用户名>/SpringNav.git
+   cd SpringNav
+   git remote add upstream https://github.com/Hei-World/SpringNav.git
+   git fetch upstream
+   git checkout -b fix/your-topic upstream/master
+   ```
+
+3. **开发与本地验证**：按上文「构建与测试」跑完 clippy、cargo test、smoke、harness。
+4. **提交**：`git commit -m "fix(parser): 简述"`，推送 `git push origin fix/your-topic`。
+5. **发起 PR**：在 fork 页面点 `Compare & pull request`，目标分支选择 `Hei-World/SpringNav` 的 `master`；按 PR 模板填写影响评估与测试结果。
+6. **CI**：PR 会自动运行 `test (ubuntu-latest)`（clippy、单测、smoke、RuoYi harness）。首次贡献者的 workflow 需要维护者批准一次。
+7. **评审与修改**：在 PR 内讨论；追加提交直接 push 到同一分支即可，CI 会自动重跑。
+8. **合并**：维护者使用 **Squash and merge** 合并为一条提交，源分支自动删除。
+9. **同步后续**：`git fetch upstream && git rebase upstream/master`，继续下一个分支。
+
+`master` 受规则保护：禁止强推与删除，合并前必须通过 `test (ubuntu-latest)`。维护者保留管理员 bypass 权限，用于紧急修复。
+
+## 提交与 PR 约定
 
 - 一个 PR 只做一件事；提交信息用 `type(scope): 摘要`，例如 `fix(parser): 支持带空格的泛型返回类型`。
 - PR 描述里写清：改了什么、为什么、对性能/内存的影响、跑了哪些测试。
 - 合并前 CI 必须全绿（clippy、cargo test、smoke、RuoYi harness）。
-- 版本号由维护者在发布时统一递增，PR 不需要改 `package.json` 的 `version`。
+- 版本号由维护者在发布时统一递增，PR 不需要改 `package.json` 的 `version`；发布记录写入 `CHANGELOG.md`。
 
 ## 发布流程（维护者）
 
