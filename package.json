@@ -124,9 +124,9 @@
     "test:harness": "node test/harness.js"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^26.6.6",
     "@types/vscode": "^1.74.0",
-    "typescript": "^5.6.3"
+    "typescript": "^7.0.2"
   },
   "napi": {
     "binaryName": "spring-nav",
