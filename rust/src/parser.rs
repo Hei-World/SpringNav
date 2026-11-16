@@ -299,9 +299,27 @@ fn parse_annotation(t: &str) -> Option<Annotation> {
     let mut raw = String::new();
     if let Some(args) = caps.get(2) {
         raw = args.as_str().to_string();
-        for q in RE_QUOTED.captures_iter(args.as_str()) {
-            if let Some(m) = q.get(1) {
-                paths.push(m.as_str().to_string());
+        // Only value/path (or positional) arguments are mapping paths; skip
+        // name/params/headers/consumes/produces so `produces = "application/json"`
+        // never becomes a fake URL.
+        for part in split_top_level(&raw, ',') {
+            let t = part.trim();
+            if t.is_empty() {
+                continue;
+            }
+            let positional = t.starts_with('"') || t.starts_with('\'') || t.starts_with('{');
+            if let Some((key, _)) = t.split_once('=') {
+                if !positional {
+                    let k = key.trim();
+                    if !k.eq_ignore_ascii_case("value") && !k.eq_ignore_ascii_case("path") {
+                        continue;
+                    }
+                }
+            }
+            for q in RE_QUOTED.captures_iter(t) {
+                if let Some(m) = q.get(1) {
+                    paths.push(m.as_str().to_string());
+                }
             }
         }
     }
@@ -356,8 +374,11 @@ fn collect_paths(anns: &[Annotation]) -> Vec<String> {
             continue;
         }
         for p in &a.paths {
-            if p.starts_with('/') || p.starts_with("${") || p.contains('{') {
-                out.push(p.clone());
+            let v = p.trim();
+            // Relative mappings (`@GetMapping("getInfo")`) are legal Spring and
+            // are joined onto the class path later; keep them.
+            if !v.is_empty() {
+                out.push(v.to_string());
             }
         }
     }
@@ -1338,6 +1359,23 @@ mod tests {
         );
         let rows = m.methods.iter().find(|x| x.name == "rows").unwrap();
         assert_eq!(rows.param_types.len(), 2);
+    }
+
+    #[test]
+    fn mapping_paths_support_relative_and_skip_non_path_args() {
+        let mut c = cand(
+            "package x;\n@RestController\n@RequestMapping(\"/chat\")\npublic class C {\n    @PostMapping\n    void add() {}\n    @GetMapping(\"getInfo\")\n    void info() {}\n    @GetMapping(value = \"/typed\", produces = \"application/json\")\n    void typed() {}\n    @RequestMapping(value = {\"/a\", \"/b\"})\n    void many() {}\n}\n",
+        );
+        c.force = true;
+        let m = parse_java(&c).unwrap();
+        assert_eq!(m.class_paths, vec!["/chat"]);
+        let get = |n: &str| m.methods.iter().find(|x| x.name == n).unwrap();
+        assert!(get("add").paths.is_empty());
+        assert_eq!(get("add").http_methods, vec!["POST"]);
+        assert_eq!(get("info").paths, vec!["getInfo"]);
+        assert_eq!(get("typed").paths, vec!["/typed"]);
+        assert_eq!(get("many").paths, vec!["/a", "/b"]);
+        assert!(!get("typed").paths.iter().any(|p| p.contains("application")));
     }
 
     #[test]

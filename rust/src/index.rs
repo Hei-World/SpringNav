@@ -685,18 +685,29 @@ fn add_file_maps(index: &mut Index, fi: usize) {
             let file = format!("{}.java", m.class_name);
             let module = module_of(&m.path, &index.roots);
             for md in &m.methods {
-                if md.paths.is_empty() {
+                // A mapping annotation without a path is still an endpoint:
+                // class-level @RequestMapping("/chat") + bare @PostMapping =
+                // POST /chat. Only methods with no mapping annotation at all
+                // are skipped.
+                if md.paths.is_empty() && md.http_methods.is_empty() {
                     continue;
                 }
-                let verb = md
-                    .http_methods
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "ANY".to_string());
-                for b in &bases {
-                    for p in &md.paths {
-                        let url = join_url_path(b, p);
-                        push_path_entry(index, &url, &file, &verb, &module, &md.loc, fi);
+                let paths: Vec<String> = if md.paths.is_empty() {
+                    vec![String::new()]
+                } else {
+                    md.paths.clone()
+                };
+                let verbs: Vec<String> = if md.http_methods.is_empty() {
+                    vec!["ANY".to_string()]
+                } else {
+                    md.http_methods.clone()
+                };
+                for verb in &verbs {
+                    for b in &bases {
+                        for p in &paths {
+                            let url = join_url_path(b, p);
+                            push_path_entry(index, &url, &file, verb, &module, &md.loc, fi);
+                        }
                     }
                 }
             }
@@ -723,7 +734,7 @@ fn push_path_entry(
     if let Some(list) = index.path_index.get(url) {
         if list
             .iter()
-            .any(|&i| index.path_entries[i].loc == *loc)
+            .any(|&i| index.path_entries[i].loc == *loc && index.path_entries[i].method == method)
         {
             return;
         }

@@ -336,10 +336,17 @@ pub fn search_path_hits(index: &Index, query: &str) -> Vec<PathEntry> {
             .then_with(|| a.loc.cmp(&b.loc))
     });
 
-    let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
+    let mut seen: HashSet<(String, u32, u32, String)> = HashSet::new();
     let mut out = Vec::new();
     for e in picked {
-        if seen.insert((e.path.clone(), e.loc.line, e.loc.character)) {
+        // One method may declare several verbs (RequestMapping(method={...})):
+        // keep one row per (path, position, verb) so each verb stays visible.
+        if seen.insert((
+            e.path.clone(),
+            e.loc.line,
+            e.loc.character,
+            e.method.clone(),
+        )) {
             out.push(e.clone());
             if out.len() >= 500 {
                 break;

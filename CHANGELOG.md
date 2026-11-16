@@ -2,6 +2,22 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。更早版本见 [Releases](https://github.com/Hei-World/SpringNav/releases)。
 
+## [0.3.6] - 2026-11-16
+
+### 修复
+
+- **无方法路径的接口搜不到**：类级 `@RequestMapping("/chat")` 配合裸 `@PostMapping` / `@PutMapping` / `@GetMapping` 时，现在会生成 `/chat` 条目，并按 `[GET]` / `[POST]` / `[PUT]` 分行。
+- **相对路径被丢弃**：`@GetMapping("getInfo")` 这类不带前导 `/` 的写法现已正确拼接到类路径下。
+- **多请求方式只留一个**：`@RequestMapping(method = {GET, POST})` 现在每个 verb 各一行，不再被去重合并。
+- **非路径参数误判**：只收集 mapping 的 `value` / `path` / 位置参数，忽略 `name` / `params` / `headers` / `consumes` / `produces`，避免 `application/json` 变成 URL。
+- 类路径尾斜杠统一归一化（`/chat/` → `/chat`）。
+
+### 测试
+
+- Rust 单测 19 → 20（映射参数解析）。
+- smoke 78 → 85：新增 S-03～S-09（空路径、多 verb、相对路径、produces 噪声、尾斜杠、映射变更后的增量失效）。
+- RuoYi：路径条目 117 → 132，`/getInfo`、`/getRouters` 恢复，`/` 只保留真实根映射。
+
 ## [0.3.5] - 2026-11-16
 
 ### 修复

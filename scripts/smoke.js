@@ -973,6 +973,15 @@ function check(name, fn) {
   w2(genCtrl,
     'package com.example.controller;\nimport java.util.List;\nimport java.util.Map;\nimport com.example.gen.GenericScanService;\npublic class GenericScanController {\n    private GenericScanService scanService;\n    void f() {\n        Map<String, Object> a = scanService.executeScan();\n        Map<String, Object> b = scanService.tightScan();\n        Map<String, List<String>> c = scanService.nestedScan();\n        List<Map<String, Object>> d = scanService.rows(1L, "x");\n    }\n}\n');
 
+  // Class-level path + bare mapping annotations (no method path) must still be
+  // indexed as endpoints, one row per HTTP verb.
+  const slashCtrl = 'src/main/java/com/example/chat/SlashController.java';
+  w2(slashCtrl,
+    'package com.example.chat;\nimport org.springframework.web.bind.annotation.*;\n@RestController\n@RequestMapping("/slash/")\npublic class SlashController {\n    @GetMapping\n    public void root() {}\n}\n');
+  const chatCtrl = 'src/main/java/com/example/chat/ChatController.java';
+  w2(chatCtrl,
+    'package com.example.chat;\nimport org.springframework.web.bind.annotation.*;\n@RestController\n@RequestMapping("/chat")\npublic class ChatController {\n    @PostMapping\n    public void add() {}\n\n    @PutMapping\n    public void update() {}\n\n    @GetMapping\n    public void detail() {}\n\n    @GetMapping("/list")\n    public void list() {}\n\n    @GetMapping("relative")\n    public void relative() {}\n\n    @GetMapping(value = "/typed", produces = "application/json")\n    public void typed() {}\n\n    @RequestMapping(method = {RequestMethod.GET, RequestMethod.POST})\n    public void multi() {}\n\n    public void helper() {}\n}\n');
+
   await checkAsync('CTX-00 context fixture indexed', async () => {
     const r = await addon.buildIndex([root2]);
     if (!r.files || r.files < 8) throw new Error('files=' + r.files);
@@ -1071,6 +1080,68 @@ function check(name, fn) {
     if (!has2(out, 'GenericScanService.java')) throw new Error('rows decl missing: ' + JSON.stringify(out));
     return `-> ${out.length} location(s)`;
   });
+  check('S-03 bare mapping annotations inherit the class path', () => {
+    const hits = addon.searchPathHits('/chat').filter((h) => h.file === 'ChatController.java');
+    const verbs = hits.filter((h) => h.path === '/chat').map((h) => h.method);
+    for (const v of ['GET', 'POST', 'PUT']) {
+      if (!verbs.includes(v)) throw new Error(`missing ${v}: ${JSON.stringify(verbs)}`);
+    }
+    if (hits.some((h) => h.path === '/chat/list' && h.method !== 'GET')) {
+      throw new Error('/chat/list verb wrong');
+    }
+    return `verbs=${verbs.join(',')}`;
+  });
+  check('S-04 multi-verb @RequestMapping lists every verb', () => {
+    const verbs = addon.searchPathHits('/chat')
+      .filter((h) => h.path === '/chat')
+      .map((h) => h.method);
+    if (verbs.filter((v) => v === 'GET').length < 2) throw new Error('multi GET missing: ' + JSON.stringify(verbs));
+    if (verbs.filter((v) => v === 'POST').length < 2) throw new Error('multi POST missing: ' + JSON.stringify(verbs));
+    return `verbs=${verbs.join(',')}`;
+  });
+  check('S-08 relative method path is joined onto the class path', () => {
+    const hits = addon.searchPathHits('relative').filter((h) => h.file === 'ChatController.java');
+    if (!hits.some((h) => h.path === '/chat/relative' && h.method === 'GET')) {
+      throw new Error('missing /chat/relative: ' + JSON.stringify(hits));
+    }
+    return 'ok';
+  });
+  check('S-09 produces/consumes values never become paths', () => {
+    const typed = addon.searchPathHits('typed').filter((h) => h.file === 'ChatController.java');
+    if (!typed.some((h) => h.path === '/chat/typed' && h.method === 'GET')) {
+      throw new Error('missing /chat/typed: ' + JSON.stringify(typed));
+    }
+    const noise = addon.searchPathHits('application');
+    if (noise.length) throw new Error('media type indexed as path: ' + JSON.stringify(noise));
+    return 'ok';
+  });
+  check('S-05 unmapped helper method produces no path entry', () => {
+    const helperLine = p2(chatCtrl, 'public void helper()').line;
+    const bad = addon.searchPathHits('chat').filter((h) => h.loc && h.loc.line === helperLine);
+    if (bad.length) throw new Error('helper indexed as endpoint: ' + JSON.stringify(bad));
+    return 'ok';
+  });
+  check('S-07 class path with trailing slash is normalized', () => {
+    const hits = addon.searchPathHits('/slash').filter((h) => h.file === 'SlashController.java');
+    if (!hits.some((h) => h.path === '/slash' && h.method === 'GET')) {
+      throw new Error('missing GET /slash: ' + JSON.stringify(hits));
+    }
+    return 'ok';
+  });
+  await checkAsync('S-06 path entries follow mapping changes', async () => {
+    const file = path.join(root2, chatCtrl);
+    const original = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, original.replace('@PutMapping', '@DeleteMapping'));
+    addon.updateFile(addon.uriForPath(file));
+    const changed = addon.searchPathHits('/chat').filter((h) => h.path === '/chat').map((h) => h.method);
+    fs.writeFileSync(file, original);
+    addon.updateFile(addon.uriForPath(file));
+    const restored = addon.searchPathHits('/chat').filter((h) => h.path === '/chat').map((h) => h.method);
+    if (changed.includes('PUT') || !changed.includes('DELETE')) throw new Error('stale PUT: ' + JSON.stringify(changed));
+    if (!restored.includes('PUT') || restored.includes('DELETE')) throw new Error('not restored: ' + JSON.stringify(restored));
+    return 'PUT -> DELETE -> PUT';
+  });
+
   check('G-05 generic without spaces still resolves (no regression)', () => {
     const out = r2(genCtrl, 'scanService.tightScan()', 12);
     if (!has2(out, 'GenericScanService.java')) throw new Error('tight decl missing: ' + JSON.stringify(out));

@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.74-007ACC)](package.json)
 
-> 当前版本 `0.3.5` ｜ [下载安装包](https://github.com/Hei-World/SpringNav/releases/latest) ｜ MIT License
+> 当前版本 `0.3.6` ｜ [下载安装包](https://github.com/Hei-World/SpringNav/releases/latest) ｜ MIT License
 
 ## 项目说明
 
@@ -88,14 +88,17 @@ spring-nav.<platform>.node（Rust / napi-rs）
 | 匹配 | 完整路径、路径片段、多关键词（空格分隔），如 `/system/user/list`、`user list`、`sys user` |
 | 每行显示 | 完整 URL、文件名、HTTP 方法、所属模块 |
 | 操作 | 回车直接打开对应 Controller 方法 |
-| URL 来源 | 类级 `@RequestMapping` + 方法级 `@GetMapping` / `@PostMapping` 等拼接；路径变量原样显示，如 `/system/user/{userId}` |
+| URL 来源 | 类级 `@RequestMapping` + 方法级 mapping 拼接；`@GetMapping("getInfo")` 这类不带前导 `/` 的写法同样拼接；路径变量原样显示，如 `/system/user/{userId}` |
+| 方法没写路径 | 只有 `@PostMapping` / `@PutMapping` / `@GetMapping` 而没有路径参数时，直接使用类路径本身（如 `/chat`），不会漏掉 |
+| 多请求方式 | 同一路径按 HTTP 方法分别成行：`GET /chat`、`POST /chat`、`PUT /chat`，用行尾 `[GET]` / `[POST]` 区分；`@RequestMapping(method = {GET, POST})` 会列出两条 |
+| 类路径尾斜杠 | `/chat/` 自动归一化为 `/chat` |
 
 ## 使用说明
 
 ### 安装
 
 - 从 [Releases](https://github.com/Hei-World/SpringNav/releases/latest) 下载 `spring-nav-<version>.vsix`，在扩展面板右上角 `...` → 「从 VSIX 安装」；
-- 或命令行：`code --install-extension spring-nav-0.3.5.vsix`；
+- 或命令行：`code --install-extension spring-nav-0.3.6.vsix`；
 - 安装包内含 6 个平台的 `.node`，运行时只加载当前平台的一个，其余仅占磁盘、不占内存；
 - 打开含 `pom.xml` / `build.gradle` 的工程后自动异步建索引，状态栏出现 `SpringNav: N 文件` 即就绪。
 
