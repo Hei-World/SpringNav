@@ -1,0 +1,89 @@
+name: Bug 报告
+description: 跳转错误、崩溃、索引异常等问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。提交前请确认：已搜索过现有 Issue，且使用的是最新 Release。
+        安全问题请勿在此公开，按 [SECURITY.md](../blob/master/SECURITY.md) 私下报告。
+  - type: input
+    id: version
+    attributes:
+      label: SpringNav 版本
+      placeholder: 例如 0.3.5（在 VS Code 扩展页或 Release 中查看）
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统 / 架构
+      options:
+        - Windows x64
+        - Windows arm64
+        - macOS Apple Silicon
+        - macOS Intel
+        - Linux x64
+        - Linux arm64
+        - 其他
+    validations:
+      required: true
+  - type: input
+    id: vscode
+    attributes:
+      label: VS Code / Qoder 版本
+      placeholder: 例如 1.95.0
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 问题类型
+      options:
+        - 跳转到了错误的位置
+        - 应该能跳但没反应
+        - 结果列表混入了不相关的方法/字段
+        - 扩展宿主崩溃或反复重启
+        - 索引耗时/内存异常
+        - 安装或加载失败
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 从打开工程到出现问题的完整步骤
+      placeholder: |
+        1. 打开 xxx 工程
+        2. 在 XxxController 第 N 行点击 xxxService.xxx()
+        3. 期望跳到 ...，实际跳到 ...
+    validations:
+      required: true
+  - type: textarea
+    id: code
+    attributes:
+      label: 相关代码片段
+      description: 触发问题的声明/调用（接口、实现类、调用点各一段最好），请删除业务敏感信息
+      render: java
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志与索引统计
+      description: |
+        输出面板选择 `SpringNav` 复制日志；状态栏 `SpringNav: N 文件` 悬停可看到项目/模块/方法/边数量，一并粘贴。
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 已使用最新 Release 复现
+          required: true
+        - label: 已搜索现有 Issue
+          required: true

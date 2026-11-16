@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（私下报告）
+    url: https://github.com/Hei-World/SpringNav/security/advisories/new
+    about: 请勿在公开 Issue 中披露安全问题，使用 GitHub 私密报告入口
+  - name: 使用问题与讨论
+    url: https://github.com/Hei-World/SpringNav/discussions
+    about: 安装、配置、使用方式等问题请到 Discussions

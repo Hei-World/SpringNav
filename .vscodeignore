@@ -14,3 +14,12 @@ Cargo.lock
 **/*.map
 **/*.tsbuildinfo
 **/.DS_Store
+
+# 开源协作文件：仓库可见，但不打进 VSIX
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+SECURITY.md
+CHANGELOG.md
+THIRD_PARTY_NOTICES.md
+.editorconfig
+.gitattributes

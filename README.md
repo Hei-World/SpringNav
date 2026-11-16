@@ -1,5 +1,10 @@
 # SpringNav
 
+[![CI](https://github.com/Hei-World/SpringNav/actions/workflows/build.yml/badge.svg)](https://github.com/Hei-World/SpringNav/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/Hei-World/SpringNav?display_name=tag)](https://github.com/Hei-World/SpringNav/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.74-007ACC)](package.json)
+
 > **当前版本：`0.3.5`** ｜ 全平台安装包：<https://github.com/Hei-World/SpringNav/releases/tag/v0.3.5> ｜ 许可证：MIT
 
 面向 VS Code 的**轻量级 SpringBoot 代码导航插件**。它不运行 Java 语言服务、不做语法高亮/补全/诊断，只做一件事：建立跨文件跳转索引，让你在 SpringBoot / MyBatis 工程里流畅地「跳过去、跳回来」。
@@ -114,20 +119,87 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 
 ## 用法
 
-打开一个 SpringBoot 工程（含 `pom.xml` 等），插件自动激活并异步建索引。输出通道 `SpringNav` 打印索引统计。
+### 安装
 
-### 入口
+- **Release 安装包（推荐）**：到 [Releases](https://github.com/Hei-World/SpringNav/releases/latest) 下载 `spring-nav-<version>.vsix`，在 VS Code 扩展面板右上角 `...` → 「从 VSIX 安装」。
+- **命令行**：`code --install-extension spring-nav-0.3.5.vsix`。
+- **从源码构建**：见「构建与多平台分发」。
+- 安装包内含 6 个平台的 `.node`，运行时只加载当前平台的一个，其余仅占磁盘、不占内存。
+- 安装后打开含 `pom.xml` / `build.gradle` 的工程，插件自动异步建索引；状态栏出现 `SpringNav: N 文件` 即就绪。
+- 与 Red Hat Java 共存时，两者的跳转结果可能同时出现（见「已知局限」）。
 
-| 入口 | 行为 |
+### 核心功能一览
+
+所有跳转都锚定在「引用 ↔ 定义」上，只有两个方向，外加一个按 URL 反查代码的搜索：
+
+| 功能 | 解决的问题 | 典型路径 |
+| --- | --- | --- |
+| **转到 Java 定义** | 这段调用最终执行的是哪段代码？ | Controller 调用点 → Service 接口方法 → 实现类方法 → Mapper 方法 → XML 语句；getter → 实体字段；类型名 → 类声明 |
+| **转到 Java 引用** | 这个方法/字段都在哪些地方被用到？ | 方法声明 → 所有调用方；实体字段 → get/set；XML 语句 → Mapper 方法；接口方法 → 实现类 + 调用方 |
+| **按接口路径搜索** | 只知道接口 URL，不知道对应哪个 Controller | 输入 `/system/user/list` → 直接定位到 Controller 方法 |
+
+### 转到 Java 定义
+
+**操作**：把光标放在调用点或声明上，`Ctrl` / `Cmd` + 单击，或按 `F12`，或右键选择「转到 Java 定义」。
+
+**能跳什么**：
+
+| 光标位置 | 跳转到 |
 | --- | --- |
-| `Ctrl` / `Cmd` + 鼠标左键点击（原生 Go to Definition） | **转到 Java 定义**：引用 → 声明；无匹配时自动回退到转到引用 |
-| `F12` | **转到 Java 定义**（`springNav.goToImplementation`），与 Ctrl/Cmd+点击一致，避免与原生 F12 语义产生歧义 |
-| `Shift+F12` / 右键「查找所有引用」 | 原生 Go to References（已注册 `ReferenceProvider`）= **转到 Java 引用**，多结果以 peek 列表展示 |
-| 右键菜单（Java / XML 文件） | 第一项「转到 Java 引用」，第二项「转到 Java 定义」 |
+| `userService.selectUserList(user)` 的方法名 | `ISysUserService.selectUserList` 接口方法 |
+| 接口方法名（再点一次） | `SysUserServiceImpl.selectUserList` 实现类方法（多实现时给出候选列表） |
+| 实现类里的 `userMapper.selectUserList(...)` | `SysUserMapper.selectUserList`；Mapper 有对应 XML 时继续到 `<select id="selectUserList">` |
+| `this.foo()` / 同类裸调用 `foo()` | 本类或父类/祖父类中最近的一个定义（覆盖优先） |
+| `getUserName()` / `setUserName(...)` | 实体字段 `userName`（手写与 Lombok 合成访问器都支持） |
+| `SysUser` 等类型名 | 类声明（参数、局部变量、字段、`new X()`、`extends` / `implements` 均可点） |
+| `@Qualifier("sysUserServiceImpl")` 字符串 | 对应类声明 |
+| 常量 `Class.CONST` / 静态方法 `Class.method()` | 字段或方法定义 |
 
-- 光标可放在**调用点**（如 `userService.selectUserList(user)`）或**声明**上，两个方向都可用。
-- 右键菜单文案不含「向上/向下」字样。
-- VS Code **不允许扩展绑定「鼠标点击 + 修饰键」组合**，`Cmd/Ctrl+Option+Click` 之类无法注册；能区分方向的鼠标手势只有内置 `Ctrl/Cmd+Click`。
+**示例**（典型的 RuoYi 分层）：
+
+```java
+@RestController
+public class SysUserController {
+    @Autowired
+    private ISysUserService userService;          // ① 点 ISysUserService → 接口
+
+    @GetMapping("/list")
+    public TableDataInfo list(SysUser user) {
+        List<SysUser> list = userService.selectUserList(user);  // ② 点 selectUserList → 接口方法
+        return getDataTable(list);                 // ③ 点 getDataTable → BaseController
+    }
+}
+```
+
+在 ② 处按下后到达接口方法；在接口方法名上再按一次到达实现类；在实现类里点 `userMapper.selectUserList` 到达 Mapper，有 XML 时继续到语句。整个过程使用同一个入口，不需要切换命令。
+
+**没有匹配时**：默认自动回退到相反方向一次（可在设置里关闭 `springNav.fallbackOnEmpty`）。歧义场景（同名类、多实现、多重载）返回空或候选列表，不做猜测式跳转。
+
+### 转到 Java 引用
+
+**操作**：把光标放在方法名、字段名、XML 语句 id 或类名上，按 `Shift+F12`（原生 Find All References），或右键选择「转到 Java 引用」。
+
+**能查什么**：
+
+| 光标位置 | 结果 |
+| --- | --- |
+| Service / Mapper 接口方法声明 | 所有调用点（Controller、定时任务、其它 Service），以及实现类方法 |
+| 实现类方法声明 | 接口方法 + 所有调用点 |
+| 实体字段 | 所有读取/写入点，以及 get/set 方法 |
+| `getUserName()` 等访问器 | 字段声明 + 其它调用方 |
+| Mapper 方法 | XML 语句（若存在） |
+| XML `<select id="...">` | 对应的 Mapper 方法，再跳到实现类中的调用方 |
+
+结果以 VS Code 原生 peek 列表展示，多条结果可上下选择、回车打开；结果会按文件路径与行号去重排序。
+
+### 按接口路径搜索
+
+**操作**：`Ctrl+Shift+P` → `SpringNav: 按接口路径搜索`（英文界面为 `SpringNav: Search by URL path`）。
+
+- 打开时列表为空，**输入即过滤**（无需回车）；清空输入恢复为空。
+- 支持完整路径、路径片段、多关键词（空格分隔），例如 `/system/user/list`、`user list`、`sys user`。
+- 每行显示：完整 URL、文件名、HTTP 方法（GET/POST/...）、所属模块；回车直接打开对应方法。
+- URL 由类级 `@RequestMapping` 与方法级 `@GetMapping` / `@PostMapping` 等拼接；路径变量按声明原样显示，如 `/system/user/{userId}`。
 
 ### 自定义快捷键（可选）
 
@@ -140,9 +212,7 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 ]
 ```
 
-### 实时接口路径搜索
-
-命令面板执行 `SpringNav: 按接口路径搜索` / `SpringNav: Search by URL path`，打开实时列表：打开时为空，输入即过滤（无需回车），清空恢复为空；每行显示完整路径、文件名、HTTP 方法、模块名；支持多关键词（全部命中优先，否则任一命中）；回车打开。
+> VS Code 不允许扩展绑定「鼠标点击 + 修饰键」组合，`Cmd/Ctrl+Option+Click` 之类无法注册；能区分方向的鼠标手势只有内置 `Ctrl/Cmd+Click`。
 
 ### 索引与多项目
 
@@ -337,27 +407,6 @@ npm run compile && npm run package                                           # T
 
 ---
 
-## 演示截图（RuoYi-Vue 实机，本地文件）
-
-以下截图保存在本地 `screenshots/` 目录，**已加入 `.gitignore`，不提交到仓库**，也不会打进 VSIX。截图来自历史版本，菜单文案以当前版本为准。
-
-| 文件 | 说明 |
-| --- | --- |
-| `screenshots/01-open.png` | 打开工程，光标在 Controller 的 `userService.selectUserList` 调用点 |
-| `screenshots/02-ctrlclick-down.png` | Ctrl+点击：调用点 → Service 接口方法（转到定义） |
-| `screenshots/03-down-service-to-impl.png` | 接口方法 → 实现类方法（转到定义） |
-| `screenshots/04-down-impl-to-mapper.png` | 实现类 → Mapper 方法 |
-| `screenshots/05-down-mapper-to-xml.png` | Mapper 方法 → XML 语句 |
-| `screenshots/06-up-xml-to-mapper.png` | XML → Mapper（转到引用） |
-| `screenshots/07-up-service-to-controller-peek.png` | 接口方法 → 控制器调用点（多结果 peek） |
-| `screenshots/08-entity-getter-to-field.png` | `getXX` → 实体字段 |
-| `screenshots/09-entity-field-to-accessors.png` | 字段 → get/set（peek 列表） |
-| `screenshots/10-context-menu.png` | 右键菜单：`转到 Java 引用` / `转到 Java 定义` |
-| `screenshots/11-context-menu-jump.png` | 右键「转到 Java 定义」实际跳转 |
-| `screenshots/12-search-empty.png` ~ `14-search-slash-fuzzy.png` | 路径搜索：空列表 / 模糊检索 / 斜杠命中 |
-| `screenshots/15-lombok-getter-to-field.png` | Lombok `@Data`：`getUserName()` → 实体字段 |
-| `screenshots/16-status-bar.png` ~ `21-reindex-folder-done.png` | 状态栏、重建命令、多根、单项目重建提示 |
-
 ---
 
 ## 已知局限 / 明确不做
@@ -383,6 +432,8 @@ npm run compile && npm run package                                           # T
 ```
 SpringNav/
 ├── package.json / package-lock.json / tsconfig.json / .vscodeignore / .gitignore
+├── LICENSE / CHANGELOG.md / CONTRIBUTING.md / CODE_OF_CONDUCT.md / SECURITY.md
+├── THIRD_PARTY_NOTICES.md      # 第三方组件许可证与商标说明
 ├── package.nls.json / package.nls.zh-cn.json   # 中英国际化文案
 ├── src/extension.ts            # TS 壳（零逻辑）、防御加载、Provider 注册
 ├── src/i18n.ts                 # 运行时提示文案
@@ -395,7 +446,8 @@ SpringNav/
 ├── .idea/spring-nav.toml       # 配置示例
 ├── schemas/spring-nav.schema.json
 ├── .github/workflows/build.yml # CI：test / build / package / release
-└── screenshots/                # 本地演示截图（不入库、不打进 VSIX）
+├── .github/ISSUE_TEMPLATE/     # Bug / 功能建议模板
+└── .github/PULL_REQUEST_TEMPLATE.md / dependabot.yml
 ```
 
 ---
@@ -409,7 +461,7 @@ SpringNav/
 3. **全量回归**：clippy `-D warnings`、cargo test、`node scripts/smoke.js`、`node test/harness.js`、`npm run compile`、`npm run package`。新场景必须补对应断言（含中文/多字节边界、同名类歧义、跨文件边失效与恢复）。
 4. **基线复测**：全量索引耗时、查询耗时、增量耗时、100 次重建收敛、压力轮 RSS 增量归零、索引计数器零增长，与本文档基线对比，确认无退化。
 5. **提交推送**：`package.json` 版本号递增，**同步 `package-lock.json` 的两处 `version` 字段**（顶层与 `packages[""]`）→ 提交推送 master → 打 `v<version>` tag → CI 自动出 6 架构产物、打全平台 VSIX 并发布 Release。`package-lock.json` 必须入库：CI 的 `package` job 用 `npm ci`，缺了会直接失败。
-6. **同步文档**：功能清单、测试结果、性能基线、已知局限、版本号随改动一起更新到本 README。
+6. **同步文档**：功能清单、测试结果、性能基线、已知局限、版本号随改动一起更新到本 README，并在 `CHANGELOG.md` 记录该版本。
 
 关键改动位置速查：
 
@@ -424,6 +476,22 @@ SpringNav/
 
 ---
 
-## License
+## 参与贡献
 
-MIT
+- 提交代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)：先讨论方案再动手，性能/内存/准确率是硬约束。
+- 社区行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
+- 安全漏洞请按 [SECURITY.md](SECURITY.md) 私下报告，不要开公开 Issue。
+- 使用问题与想法欢迎到 Discussions；可复现的缺陷请用 Bug 模板提交，并附代码片段与 `SpringNav` 日志。
+- 版本变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+---
+
+## 开源协议
+
+本项目以 [MIT](LICENSE) 协议开源，Copyright (c) 2026 Hei-World。
+
+- 可自由使用、修改、分发与商用，保留版权与许可声明即可。
+- 第三方组件许可证与商标说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+- SpringNav 是独立第三方项目，与 VMware / Broadcom、Oracle、Microsoft 无隶属或背书关系。
+- 贡献即表示同意以 MIT 协议授权（inbound = outbound）。
+

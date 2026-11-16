@@ -1,0 +1,58 @@
+name: 功能建议
+description: 新的跳转场景、精度改进或使用体验建议
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        SpringNav 的硬约束是**性能、内存、资源占用**，且不引入 JVM / Java 语言服务。
+        请先确认建议不违背这些前提，再描述场景；我们会先评估复杂度与副作用，再决定是否实现。
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 你在什么工程、什么代码写法下遇到了什么不便？
+    validations:
+      required: true
+  - type: textarea
+    id: expect
+    attributes:
+      label: 期望的跳转行为
+      description: 点击哪个符号、期望到达哪里（定义 / 引用 / 实现类 / XML 语句等）
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: 当前行为
+      description: 现在点了之后发生什么？是否返回空、跳错、还是候选列表混入无关结果？
+    validations:
+      required: false
+  - type: textarea
+    id: sample
+    attributes:
+      label: 代码示例
+      description: 请提供最小示例（可脱敏），便于判断解析规则
+      render: java
+    validations:
+      required: false
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: 出现频率
+      options:
+        - 项目里很常见，影响日常开发
+        - 偶尔遇到
+        - 边缘写法，仅作记录
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 已阅读 README 的「已知局限 / 明确不做」
+          required: true
+        - label: 已搜索现有 Issue
+          required: true

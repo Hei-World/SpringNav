@@ -1,0 +1,15 @@
+# 统一换行符，避免 Windows 贡献者引入 CRLF 噪声
+* text=auto eol=lf
+
+# 二进制产物
+*.node binary
+*.vsix binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# 生成文件，折叠 diff / 语言统计
+package-lock.json linguist-generated=true
+rust/Cargo.lock linguist-generated=true

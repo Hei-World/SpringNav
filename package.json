@@ -9,6 +9,11 @@
     "type": "git",
     "url": "https://github.com/Hei-World/SpringNav.git"
   },
+  "homepage": "https://github.com/Hei-World/SpringNav#readme",
+  "bugs": {
+    "url": "https://github.com/Hei-World/SpringNav/issues"
+  },
+  "author": "Hei-World",
   "engines": {
     "vscode": "^1.74.0"
   },
