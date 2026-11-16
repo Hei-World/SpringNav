@@ -212,6 +212,8 @@ npm run build          # 以上两步
 npm run package        # 编译 + 构建 + 打包 VSIX
 ```
 
+`package-lock.json` 锁定 3 个开发依赖的版本，CI 的 `package` job 使用 `npm ci`（必须有 lock 文件）；它随 `package.json` 一起提交，不要忽略或删除。
+
 `scripts/build-native.sh` 把 `target/release/libspring_nav.{so,dylib,dll}` 复制并改名为 `native/spring-nav.<platform>-<arch>[-<libc>].node`（Windows 为 `...-msvc.node`）。`native/index.js` 依据 `process.platform` / `process.arch` / libc 在运行时**只 dlopen 一个** `.node`；其余架构文件仅为磁盘存在，不影响内存与运行效率。
 
 大体积产物可用 `CARGO_TARGET_DIR` 重定向：
@@ -367,7 +369,7 @@ npm run compile && npm run package                                           # T
 
 ```
 SpringNav/
-├── package.json / tsconfig.json / .vscodeignore / .gitignore
+├── package.json / package-lock.json / tsconfig.json / .vscodeignore / .gitignore
 ├── package.nls.json / package.nls.zh-cn.json   # 中英国际化文案
 ├── src/extension.ts            # TS 壳（零逻辑）、防御加载、Provider 注册
 ├── src/i18n.ts                 # 运行时提示文案
