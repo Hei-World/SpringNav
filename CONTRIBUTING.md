@@ -59,7 +59,7 @@ git clone --depth 1 https://github.com/yangzongzhuan/RuoYi-Vue.git /tmp/RuoYi-Vu
 
 - 修 bug：必须补一条能复现旧行为的断言（合成夹具优先，真实项目场景补到 `test/harness.js`）。
 - 加功能：`scripts/smoke.js` 至少覆盖正向跳转、反向引用、歧义不跳三种情况；涉及跨文件边时补「改文件 → 边失效 → 恢复」的增量断言。
-- 涉及解析/索引的改动，需要记录：全量索引耗时、查询耗时、增量耗时、100 次重建后的 RSS 与索引计数器，与 README「测试与性能基线」对比。
+- 涉及解析/索引的改动，需要记录：全量索引耗时、查询耗时、增量耗时、100 次重建后的 RSS 与索引计数器，与 [AGENTS.md](AGENTS.md) 的「测试体系」基线对比。
 
 ## 分支与发布（维护者）
 
@@ -68,7 +68,7 @@ git clone --depth 1 https://github.com/yangzongzhuan/RuoYi-Vue.git /tmp/RuoYi-Vu
 - `master` 受规则保护：禁止删除、禁止强推。
 - 发布流程：
   1. 更新 `package.json` 与 `package-lock.json`（两处 `version`）到新版本；
-  2. 同步 `README.md` 与 `CHANGELOG.md`；
+  2. 同步 `README.md`（用户视角）、`AGENTS.md`（详细上下文）与 `CHANGELOG.md`；
   3. 提交并推送 `master`；
   4. 打 `v<version>` tag 并推送，GitHub Actions 自动测试、构建 6 架构 `.node`、打全平台 VSIX 并发布 Release。
 

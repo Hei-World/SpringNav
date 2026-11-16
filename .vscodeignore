@@ -23,3 +23,6 @@ CHANGELOG.md
 THIRD_PARTY_NOTICES.md
 .editorconfig
 .gitattributes
+
+# 维护者上下文，不随 VSIX 分发
+AGENTS.md
