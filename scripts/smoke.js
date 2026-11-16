@@ -961,6 +961,18 @@ function check(name, fn) {
   w2(inj,
     'package com.example.controller;\nimport com.example.service.IOps;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.beans.factory.annotation.Qualifier;\npublic class InjectController {\n    @Autowired\n    private IOps ops;\n    @Qualifier("opsImpl")\n    private IOps other;\n}\n');
 
+  // Generic return types with spaces inside the type arguments
+  // (`Map<String, Object>`, `Map<String, List<X>>`) are ordinary methods.
+  const genSvc = 'src/main/java/com/example/gen/GenericScanService.java';
+  const genImpl = 'src/main/java/com/example/gen/impl/GenericScanServiceImpl.java';
+  const genCtrl = 'src/main/java/com/example/controller/GenericScanController.java';
+  w2(genSvc,
+    'package com.example.gen;\nimport java.util.List;\nimport java.util.Map;\npublic interface GenericScanService {\n    Map<String, Object> executeScan();\n    Map<String,Object> tightScan();\n    Map<String, List<String>> nestedScan();\n    List<Map<String, Object>> rows(Long id, String name);\n}\n');
+  w2(genImpl,
+    'package com.example.gen.impl;\nimport java.util.List;\nimport java.util.Map;\nimport com.example.gen.GenericScanService;\npublic class GenericScanServiceImpl implements GenericScanService {\n    public Map<String, Object> executeScan() { return null; }\n    public Map<String,Object> tightScan() { return null; }\n    public Map<String, List<String>> nestedScan() { return null; }\n    public List<Map<String, Object>> rows(Long id, String name) { return null; }\n}\n');
+  w2(genCtrl,
+    'package com.example.controller;\nimport java.util.List;\nimport java.util.Map;\nimport com.example.gen.GenericScanService;\npublic class GenericScanController {\n    private GenericScanService scanService;\n    void f() {\n        Map<String, Object> a = scanService.executeScan();\n        Map<String, Object> b = scanService.tightScan();\n        Map<String, List<String>> c = scanService.nestedScan();\n        List<Map<String, Object>> d = scanService.rows(1L, "x");\n    }\n}\n');
+
   await checkAsync('CTX-00 context fixture indexed', async () => {
     const r = await addon.buildIndex([root2]);
     if (!r.files || r.files < 8) throw new Error('files=' + r.files);
@@ -1029,6 +1041,40 @@ function check(name, fn) {
     if (has2(dropped, 'OpsImpl.java')) throw new Error('stale edge after impl changed: ' + JSON.stringify(dropped));
     if (!has2(restored, 'OpsImpl.java')) throw new Error('edge not restored: ' + JSON.stringify(restored));
     return 'dropped then restored';
+  });
+
+  check('G-01 call to a spaced-generic-return method -> interface declaration', () => {
+    const out = r2(genCtrl, 'scanService.executeScan()', 12);
+    if (!has2(out, 'GenericScanService.java')) throw new Error('interface decl missing: ' + JSON.stringify(out));
+    return `-> ${out.length} location(s)`;
+  });
+  check('G-02 spaced-generic-return declaration -> impl down, caller up', () => {
+    const p = p2(genSvc, 'executeScan();');
+    const uri = addon.uriForPath(path.join(root2, genSvc));
+    const down = addon.resolveDirectional(uri, p.line, p.character, p.text, 'down', true);
+    const up = addon.resolveDirectional(uri, p.line, p.character, p.text, 'up', true);
+    if (!has2(down, 'GenericScanServiceImpl.java')) throw new Error('impl missing: ' + JSON.stringify(down));
+    if (!has2(up, 'GenericScanController.java')) throw new Error('caller missing: ' + JSON.stringify(up));
+    return 'ok';
+  });
+  check('G-03 nested generic return type is indexed and reachable', () => {
+    const call = r2(genCtrl, 'scanService.nestedScan()', 12);
+    if (!has2(call, 'GenericScanService.java')) throw new Error('nested decl missing: ' + JSON.stringify(call));
+    const p = p2(genSvc, 'nestedScan();');
+    const down = addon.resolveDirectional(
+      addon.uriForPath(path.join(root2, genSvc)), p.line, p.character, p.text, 'down', true);
+    if (!has2(down, 'GenericScanServiceImpl.java')) throw new Error('nested impl missing: ' + JSON.stringify(down));
+    return 'ok';
+  });
+  check('G-04 generic return + two params resolves by name and arity', () => {
+    const out = r2(genCtrl, 'scanService.rows(1L, "x")', 12);
+    if (!has2(out, 'GenericScanService.java')) throw new Error('rows decl missing: ' + JSON.stringify(out));
+    return `-> ${out.length} location(s)`;
+  });
+  check('G-05 generic without spaces still resolves (no regression)', () => {
+    const out = r2(genCtrl, 'scanService.tightScan()', 12);
+    if (!has2(out, 'GenericScanService.java')) throw new Error('tight decl missing: ' + JSON.stringify(out));
+    return `-> ${out.length} location(s)`;
   });
 
   await checkAsync('A6a-04 qualifier edge invalidates when the named class changes', async () => {

@@ -22,9 +22,12 @@ static RE_ANNOTATION: LazyLock<Regex> =
 
 static RE_QUOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"["']([^"']*)["']"#).unwrap());
 
+// Return type may contain generic arguments with spaces and commas
+// (`Map<String, Object>`, `List<Map<String, Object>>`), qualified names and
+// arrays; the leading `<...>` alternative covers generic methods (`<T> T f`).
 static RE_METHOD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"^\s*(?:(?:public|private|protected|static|final|abstract|synchronized|native|default|strictfp|transient|volatile)\s+|<[^>]+>\s+)*([A-Za-z_$][\w$<>\[\],.?]*)\s+(\w+)\s*\(",
+        r"^\s*(?:(?:public|private|protected|static|final|abstract|synchronized|native|default|strictfp|transient|volatile)\s+|<[^;{}()]*?>\s+)*([A-Za-z_$][\w$.]*(?:\s*<[^;{}()]*?>)?(?:\s*\[\s*\])*)\s+(\w+)\s*\(",
     )
     .unwrap()
 });
@@ -1319,6 +1322,33 @@ mod tests {
         assert_eq!(m.methods[0].paths, vec!["/one"]);
         // Column must be correct on the masked line (name follows the space).
         assert!(m.class_loc.character > 0);
+    }
+
+    #[test]
+    fn generic_return_types_with_spaces_are_methods() {
+        let mut c = cand(
+            "package x;\npublic interface S {\n    Map<String, Object> executeScan();\n    Map<String, List<Foo>> nested();\n    List<Map<String, Object>> rows(Long id, String name);\n    java.util.Map<String, Object> qualified();\n    byte[] bytes();\n    <T> T pick(T in);\n}\n",
+        );
+        c.force = true;
+        let m = parse_java(&c).unwrap();
+        let names: Vec<&str> = m.methods.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["executeScan", "nested", "rows", "qualified", "bytes", "pick"]
+        );
+        let rows = m.methods.iter().find(|x| x.name == "rows").unwrap();
+        assert_eq!(rows.param_types.len(), 2);
+    }
+
+    #[test]
+    fn generic_local_variable_is_not_a_method() {
+        let mut c = cand(
+            "package x;\npublic class C {\n    void f() {\n        Map<String, Object> m = new HashMap<>();\n        m.put(\"a\", \"b\");\n        if (m.size() < 3) { return; }\n    }\n}\n",
+        );
+        c.force = true;
+        let m = parse_java(&c).unwrap();
+        let names: Vec<&str> = m.methods.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, vec!["f"]);
     }
 
     #[test]

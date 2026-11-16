@@ -1,6 +1,6 @@
 # SpringNav
 
-> **当前版本：`0.3.4`** ｜ 全平台安装包：<https://github.com/Hei-World/SpringNav/releases/tag/v0.3.4> ｜ 许可证：MIT
+> **当前版本：`0.3.5`** ｜ 全平台安装包：<https://github.com/Hei-World/SpringNav/releases/tag/v0.3.5> ｜ 许可证：MIT
 
 面向 VS Code 的**轻量级 SpringBoot 代码导航插件**。它不运行 Java 语言服务、不做语法高亮/补全/诊断，只做一件事：建立跨文件跳转索引，让你在 SpringBoot / MyBatis 工程里流畅地「跳过去、跳回来」。
 
@@ -69,7 +69,7 @@ VS Code (TypeScript 壳, 零逻辑)  ──同步调用──>  spring-nav.<plat
 
 | 编号 | 功能 |
 | --- | --- |
-| J-01 | 方法调用 → 定义（Controller 调 Service、ServiceImpl 调 Mapper、同类/父类方法） |
+| J-01 | 方法调用 → 定义（Controller 调 Service、ServiceImpl 调 Mapper、同类/父类方法）。返回类型支持泛型、嵌套泛型、通配符、数组与限定名，`Map<String, Object>` / `List<Map<String, Object>>` 等泛型内带空格的写法同样识别 |
 | J-02 | Service 接口方法 ↔ 实现类方法（多实现返回候选列表） |
 | J-03 | Mapper 接口方法 ↔ XML 语句：**精确 `(namespace, id)` 匹配**（模糊前缀匹配已移除，避免 `selectUserList` 误配 `selectUserIdByPhonenumber`） |
 | J-04 | 实体字段 ↔ get/set：手写 accessor、`getXxx` / `isXxx` / `setXxx`、Lombok 合成访问器 |
@@ -293,18 +293,18 @@ npm run package     # 把上面所有 .node 一起打进 spring-nav-<version>.vs
 
 ```bash
 cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings  # 0 警告
-cargo test --manifest-path rust/Cargo.toml                                 # 17/17
-node scripts/smoke.js                                                       # 73/73
-node test/harness.js /path/to/RuoYi-Vue                                      # 28/28
+cargo test --manifest-path rust/Cargo.toml                                 # 19/19
+node scripts/smoke.js                                                       # 78/78
+node test/harness.js /path/to/RuoYi-Vue                                      # 32/32
 npm run compile && npm run package                                           # TS 编译 + VSIX 打包
 ```
 
-- `smoke.js` 自建 Controller/Service/Impl/Mapper/XML/Entity 齐全的临时工程，覆盖全链路跳转、Lombok、重载、继承、多根、增量、单项目重建、配置热加载、路径搜索；另含**独立上下文夹具**的 11 条专项断言：同名类不混入（常量/静态/方法引用/类型名点击）、祖父类方法跳转、就近覆盖优先、`@Autowired`/`@Qualifier` 跳转、跨文件边增量失效与恢复。
-- `harness.js` 对 [RuoYi-Vue](https://github.com/yangzongzhuan/RuoYi-Vue) 真实项目验证定义/引用双向链、回退、实体字段 ↔ get/set、Lombok 合成访问器、实时路径命中元数据、配置与增量。
+- `smoke.js` 自建 Controller/Service/Impl/Mapper/XML/Entity 齐全的临时工程，覆盖全链路跳转、Lombok、重载、继承、多根、增量、单项目重建、配置热加载、路径搜索；另含**独立上下文夹具**的 16 条专项断言：同名类不混入（常量/静态/方法引用/类型名点击）、祖父类方法跳转、就近覆盖优先、`@Autowired`/`@Qualifier` 跳转、跨文件边增量失效与恢复、泛型返回值（含带空格与嵌套泛型）方法声明与调用点互通。
+- `harness.js` 对 [RuoYi-Vue](https://github.com/yangzongzhuan/RuoYi-Vue) 真实项目验证定义/引用双向链、回退、实体字段 ↔ get/set、Lombok 合成访问器、实时路径命中元数据、配置与增量，并用 `Map<String, String>` / `List<Map<String, Object>>` 返回类型的方法做真实代码回归。
 - 两者都直接加载 `.node`，不依赖 VS Code / GUI。
 - 另有内存资源专项复测：100 次全量重建、5 轮压力（每轮 1000 次保存 + 10 万次查询）、中文多字节边界、`lastPanic` 检查。
 
-### 基线数据（RuoYi，210 文件 / 190 Java / 166 XML 语句 / 1866 方法 / 4448 调用点 / 6420 边 / 7112 span）
+### 基线数据（RuoYi，210 文件 / 190 Java / 166 XML 语句 / 1885 方法 / 4448 调用点 / 6451 边 / 7131 span）
 
 两遍完整验收实测：
 
@@ -320,7 +320,20 @@ npm run compile && npm run package                                           # T
 | 索引计数器增长（100 次重建 + 5000 次保存 + 50 万次查询后） | **零** | **零** | 无泄漏 |
 | `skipped` / `failed` / `xml_cache` | 0 / 0 / 0 | 0 / 0 / 0 | 无资源浪费 |
 
-**内存口径说明**：RSS 是整个 Node 进程（V8 + libuv + Rust 索引 + glibc malloc arena），不是「索引占 147MB」；V8 堆仅 3.5MB，索引数据结构净大小约 30MB 量级。压力阶段一次性约 +12MB 是 `updateFile` 反复重建状态时 allocator arena 扩张、drop 后未立即归还 OS（Linux glibc 行为），随后 5 轮增量归零即证明有界、非泄漏。`call_cache(4448) == calls(4448)`、`edge_contrib(210) == files(210)` 说明无冗余缓存与孤立贡献。与 0.3.2 基线（约 156MB）相比无退化。
+0.3.5（方法声明解析修复后）同一脚本复测，与 0.3.4 二进制逐项对比：
+
+| 指标 | 0.3.4 | 0.3.5 | 判定 |
+| --- | --- | --- | --- |
+| 全量索引（10 次均值） | 88.63 ms | 82.97 ms | 持平/更快（同一轮次交错测量，差异在噪声内） |
+| 真实调用点解析 | — | 1.19 µs | 微秒级 |
+| 保存 / 增量 | — | 4.197 ms | 毫秒级 |
+| 100 次全量重建后 RSS | 149.2 MB | 149.9 MB | +0.7 MB（新增 19 个方法声明，无累积增长） |
+| 12 轮压力后 RSS 平台 | +14.3 MB | +13.8 MB | 收敛、不再增长；0.3.5 略低 |
+| V8 `heapUsed`（每轮 GC 后） | — | 3.8 MB 恒定 | 无 JS 对象堆积 |
+| 索引计数器（12 轮压力后） | 稳定 | 稳定 | `methods=1885`、`calls=4448`、`edge_contrib=210` 不变 |
+| `skipped` / `failed` | 0 / 0 | 0 / 0 | 无资源浪费 |
+
+**内存口径说明**：RSS 是整个 Node 进程（V8 + libuv + Rust 索引 + glibc malloc arena），不是「索引占 147MB」；V8 堆仅 3.5MB，索引数据结构净大小约 30MB 量级。压力阶段一次性约 +12MB 是 `updateFile` 反复重建状态时 allocator arena 扩张、drop 后未立即归还 OS（Linux glibc 行为），随后多轮增量不再增长即证明有界、非泄漏。`call_cache(4448) == calls(4448)`、`edge_contrib(210) == files(210)` 说明无冗余缓存与孤立贡献。与 0.3.2 基线（约 156MB）相比无退化。
 
 ---
 
@@ -376,8 +389,8 @@ SpringNav/
 ├── native/index.js             # 平台选择加载器
 ├── native/*.node               # 6 架构二进制（.gitignore 忽略，CI 产出）
 ├── scripts/build-native.sh     # 构建 .node，支持 SN_TARGET 跨架构
-├── scripts/smoke.js            # 合成工程自检（73 项）
-├── test/harness.js             # RuoYi 端到端断言（28 项）
+├── scripts/smoke.js            # 合成工程自检（78 项）
+├── test/harness.js             # RuoYi 端到端断言（32 项）
 ├── rust/src/                   # napi-rs crate：scanner/parser/model/index/resolve/config/lib
 ├── .idea/spring-nav.toml       # 配置示例
 ├── schemas/spring-nav.schema.json

@@ -305,6 +305,40 @@ function has(out, rel) {
     return 'ok';
   });
 
+  // Real-world regression: return types whose generic arguments contain a
+  // space (`Map<String, String>`, `List<Map<String, Object>>`) must index.
+  const G = {
+    genSvc: 'ruoyi-generator/src/main/java/com/ruoyi/generator/service/IGenTableService.java',
+    genImpl: 'ruoyi-generator/src/main/java/com/ruoyi/generator/service/GenTableServiceImpl.java',
+    genCtrl: 'ruoyi-generator/src/main/java/com/ruoyi/generator/controller/GenController.java',
+    noticeSvc: 'ruoyi-system/src/main/java/com/ruoyi/system/service/ISysNoticeReadService.java',
+    noticeImpl: 'ruoyi-system/src/main/java/com/ruoyi/system/service/impl/SysNoticeReadServiceImpl.java',
+  };
+
+  check('G-01 Map<String,String> return: interface decl down -> impl', () => {
+    const out = resolveDir(G.genSvc, 'previewCode(Long tableId)', 'down');
+    if (!has(out, G.genImpl)) throw new Error('no impl: ' + JSON.stringify(out.slice(0, 4)));
+    return `-> ${out.length}`;
+  });
+
+  check('G-02 Map<String,String> return: interface decl up -> controller', () => {
+    const out = resolveDir(G.genSvc, 'previewCode(Long tableId)', 'up');
+    if (!has(out, G.genCtrl)) throw new Error('no controller: ' + JSON.stringify(out.slice(0, 4)));
+    return `-> ${out.length}`;
+  });
+
+  check('G-03 controller call to spaced-generic method -> interface decl', () => {
+    const out = resolveDir(G.genCtrl, 'genTableService.previewCode(', 'down', 'genTableService.'.length);
+    if (!has(out, G.genSvc)) throw new Error('no service: ' + JSON.stringify(out.slice(0, 4)));
+    return `-> ${out.length}`;
+  });
+
+  check('G-04 List<Map<String,Object>> return: decl down -> impl', () => {
+    const out = resolveDir(G.noticeSvc, 'selectReadUsersByNoticeId(Long noticeId', 'down');
+    if (!has(out, G.noticeImpl)) throw new Error('no impl: ' + JSON.stringify(out.slice(0, 4)));
+    return `-> ${out.length}`;
+  });
+
   const failed = results.filter((r) => !r).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed`);
   process.exit(failed ? 1 : 0);
