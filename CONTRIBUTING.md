@@ -1,31 +1,35 @@
 # 参与贡献
 
-感谢你愿意改进 SpringNav。这个项目对**性能、内存、资源占用**有硬性要求，提交前请先读完本文。
+SpringNav 以 MIT 协议开源，欢迎使用、反馈和讨论。但本仓库**不接受外部 Pull Request**，请先阅读下面的反馈方式。
 
-## 先讨论，再写代码
+## 如何反馈
 
-- 新功能、解析规则调整、任何可能影响索引耗时或内存的改动，请先开 Issue 说明场景与方案，确认口径后再动手。
-- 只修文档、注释、测试的 PR 可以直接提交。
-- 不接受为了覆盖率牺牲准确率的改动：同名类/多实现有歧义时应当「不跳」，而不是猜一个。
+| 类型 | 渠道 |
+| --- | --- |
+| 可复现的 Bug（跳错、不跳、崩溃、索引异常） | [Bug 报告](https://github.com/Hei-World/SpringNav/issues/new?template=bug_report.yml) |
+| 新功能 / 跳转场景建议 | [功能建议](https://github.com/Hei-World/SpringNav/issues/new?template=feature_request.yml) |
+| 安装、配置、使用方法等问题 | [Discussions](https://github.com/Hei-World/SpringNav/discussions) |
+| 安全漏洞 | **不要开公开 Issue**，按 [SECURITY.md](SECURITY.md) 私密报告 |
 
-## 硬性边界
+提交 Bug 时请尽量附上：SpringNav 版本、操作系统与架构、VS Code 版本、触发代码片段（接口 / 实现类 / 调用点）、期望与实际跳转位置、`SpringNav` 输出通道日志、状态栏悬停的索引统计。
 
-以下方案不会被合并：
+## 代码贡献政策
 
-- 引入 JVM、Java 语言服务（JDT LS / Red Hat Java）、tree-sitter、WASM 或外部源码下载；
-- 在查询路径上读磁盘、重新解析文件，或引入阻塞式全量扫描；
-- 绕过 `compute_file_edges` 另建旁路缓存，导致增量失效不完整；
-- 破坏「索引只存边与紧凑元数据，不存源码/语法树」的设计。
+本仓库已关闭 Pull Request 功能：
 
-## 环境要求
+- 任何人都无法向 `Hei-World/SpringNav` 发起合并请求；
+- Fork 仍然可以，你可以自由修改用于自己使用，但请遵守 MIT 许可证；
+- 如果你有修复思路，欢迎在对应 Issue 中说明：场景、最小复现、原因分析、建议改法，必要时附代码片段或 patch 文本。维护者评估后会自行实现并发布。
+
+这样做的原因：项目对性能、内存和解析准确率有硬性约束，跳转规则需要整体一致，由单人统一维护可以避免规则冲突和回归成本。
+
+## 维护者开发环境
 
 | 工具 | 版本 |
 | --- | --- |
 | Node.js | 18+（CI 使用 20） |
 | Rust | stable（`rustup` 安装即可） |
 | VS Code | 1.74+ |
-
-## 构建与测试
 
 ```bash
 npm ci                     # 必须使用 lockfile
@@ -36,7 +40,11 @@ cargo test --manifest-path rust/Cargo.toml
 cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 ```
 
-`test/harness.js` 默认读取 `/tmp/RuoYi-Vue`，也可以传任意 SpringBoot 工程根目录；仓库不带测试工程，请自行 `git clone --depth 1 https://github.com/yangzongzhuan/RuoYi-Vue.git /tmp/RuoYi-Vue`。
+`test/harness.js` 默认读取 `/tmp/RuoYi-Vue`，也可以传任意 SpringBoot 工程根目录：
+
+```bash
+git clone --depth 1 https://github.com/yangzongzhuan/RuoYi-Vue.git /tmp/RuoYi-Vue
+```
 
 ## 代码约定
 
@@ -45,61 +53,25 @@ cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 - **查询层**（`rust/src/resolve.rs`）：只做内存查表；兜底逻辑不得重新解析源码。
 - **TS 壳**（`src/extension.ts`）：零业务逻辑，只做参数转换、Provider 注册与防御加载；所有 napi 入口必须保持 `catch_unwind` 防线。
 - 文案改动同时更新 `package.nls.json`、`package.nls.zh-cn.json`、`src/i18n.ts`，保持「定义 / 引用」概念一致。
+- 不引入 JVM、Java 语言服务（JDT LS / Red Hat Java）、tree-sitter、WASM 或外部源码下载；不在查询路径上读磁盘或重新解析文件。
 
 ## 测试要求
 
 - 修 bug：必须补一条能复现旧行为的断言（合成夹具优先，真实项目场景补到 `test/harness.js`）。
 - 加功能：`scripts/smoke.js` 至少覆盖正向跳转、反向引用、歧义不跳三种情况；涉及跨文件边时补「改文件 → 边失效 → 恢复」的增量断言。
-- 涉及解析/索引的改动，请在 PR 中附上本地基线：全量索引耗时、查询耗时、增量耗时、100 次重建后的 RSS 与索引计数器（与 README「测试与性能基线」对比）。
+- 涉及解析/索引的改动，需要记录：全量索引耗时、查询耗时、增量耗时、100 次重建后的 RSS 与索引计数器，与 README「测试与性能基线」对比。
 
-## 分支模型
+## 分支与发布（维护者）
 
-- `master` 是唯一长期分支，始终保持可构建、可发布；**不设 `develop`**，避免双分支同步成本。
-- 功能与修复使用短分支，合并后自动删除：
-  - `feat/<简述>` 新功能
-  - `fix/<简述>` 修复
-  - `docs/<简述>` 文档
-  - `chore/<简述>` 构建、依赖、CI
-- 发布通过 `v<version>` tag 触发，不为发布单独开分支。
-
-## 其他人如何提交代码并合并
-
-外部贡献者没有仓库写权限，按 Fork + Pull Request 流程：
-
-1. **Fork**：打开 <https://github.com/Hei-World/SpringNav>，点右上角 `Fork`，得到自己的副本。
-2. **克隆并同步**：
-
-   ```bash
-   git clone https://github.com/<你的用户名>/SpringNav.git
-   cd SpringNav
-   git remote add upstream https://github.com/Hei-World/SpringNav.git
-   git fetch upstream
-   git checkout -b fix/your-topic upstream/master
-   ```
-
-3. **开发与本地验证**：按上文「构建与测试」跑完 clippy、cargo test、smoke、harness。
-4. **提交**：`git commit -m "fix(parser): 简述"`，推送 `git push origin fix/your-topic`。
-5. **发起 PR**：在 fork 页面点 `Compare & pull request`，目标分支选择 `Hei-World/SpringNav` 的 `master`；按 PR 模板填写影响评估与测试结果。
-6. **CI**：PR 会自动运行 `test (ubuntu-latest)`（clippy、单测、smoke、RuoYi harness）。首次贡献者的 workflow 需要维护者批准一次。
-7. **评审与修改**：在 PR 内讨论；追加提交直接 push 到同一分支即可，CI 会自动重跑。
-8. **合并**：维护者使用 **Squash and merge** 合并为一条提交，源分支自动删除。
-9. **同步后续**：`git fetch upstream && git rebase upstream/master`，继续下一个分支。
-
-`master` 受规则保护：禁止强推与删除，合并前必须通过 `test (ubuntu-latest)`。维护者保留管理员 bypass 权限，用于紧急修复。
-
-## 提交与 PR 约定
-
-- 一个 PR 只做一件事；提交信息用 `type(scope): 摘要`，例如 `fix(parser): 支持带空格的泛型返回类型`。
-- PR 描述里写清：改了什么、为什么、对性能/内存的影响、跑了哪些测试。
-- 合并前 CI 必须全绿（clippy、cargo test、smoke、RuoYi harness）。
-- 版本号由维护者在发布时统一递增，PR 不需要改 `package.json` 的 `version`；发布记录写入 `CHANGELOG.md`。
-
-## 发布流程（维护者）
-
-1. 更新 `package.json` 与 `package-lock.json`（两处 `version`）到新版本，同步 README 与 `CHANGELOG.md`；
-2. 推送 `master`；
-3. 打 `v<version>` tag 并推送，GitHub Actions 自动测试、构建 6 架构 `.node`、打全平台 VSIX 并发布 Release。
+- `master` 是唯一长期分支，始终保持可构建、可发布；不设 `develop`。
+- 本地可以使用短分支（`feat/*`、`fix/*`、`docs/*`、`chore/*`），完成后 squash 到 `master` 并删除。
+- `master` 受规则保护：禁止删除、禁止强推。
+- 发布流程：
+  1. 更新 `package.json` 与 `package-lock.json`（两处 `version`）到新版本；
+  2. 同步 `README.md` 与 `CHANGELOG.md`；
+  3. 提交并推送 `master`；
+  4. 打 `v<version>` tag 并推送，GitHub Actions 自动测试、构建 6 架构 `.node`、打全平台 VSIX 并发布 Release。
 
 ## 许可证
 
-贡献即表示你同意以 [MIT](LICENSE) 许可证授权你的改动（inbound = outbound）。
+贡献（包括在 Issue 中提供的代码片段）表示你同意以 [MIT](LICENSE) 许可证授权，允许维护者将其并入本项目。

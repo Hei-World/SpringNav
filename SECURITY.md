@@ -37,6 +37,7 @@
 
 ## 依赖安全
 
-- Dependabot 每周检查 npm / Cargo / GitHub Actions 依赖并提交 PR；
-- CI 在合并前运行 clippy、单元测试与端到端回归；
+- Dependabot 依赖告警保持开启，发现的漏洞在 Security 页面提示；
+- 仓库不接受外部 PR，依赖升级由维护者评估后随版本发布；
+- CI 在发布 tag 时运行 clippy、单元测试与端到端回归；
 - 发布产物由 GitHub Actions 从 tag 构建，构建日志公开可查。

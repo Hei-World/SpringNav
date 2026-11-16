@@ -326,7 +326,6 @@ SN_TARGET=aarch64-unknown-linux-gnu bash scripts/build-native.sh  # Linux x64 �
 触发方式：
 
 - push `v*` tag：全平台构建 + 打包 + **自动发 Release**
-- 任意 PR：只跑 `test` 门禁（clippy / 单测 / smoke / RuoYi harness），多架构构建与打包不执行
 - Actions 页面手动 `workflow_dispatch`：全流程（不出 Release）
 
 > 平台注意：**linux musl 变体不做**——Rust 的 `x86_64-unknown-linux-musl` 不支持编译 `cdylib`（musl libc 无动态加载），napi 原生模块无法用它构建；**macos-13 Intel runner 已退役**，x86_64 macOS 产物改由 arm64 runner 交叉编译。
@@ -446,8 +445,7 @@ SpringNav/
 ├── .idea/spring-nav.toml       # 配置示例
 ├── schemas/spring-nav.schema.json
 ├── .github/workflows/build.yml # CI：test / build / package / release
-├── .github/ISSUE_TEMPLATE/     # Bug / 功能建议模板
-└── .github/PULL_REQUEST_TEMPLATE.md / dependabot.yml
+└── .github/ISSUE_TEMPLATE/     # Bug / 功能建议模板
 ```
 
 ---
@@ -478,13 +476,14 @@ SpringNav/
 
 ## 参与贡献
 
-- 提交代码前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)：先讨论方案再动手，性能/内存/准确率是硬约束。
-- 社区行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
-- 安全漏洞请按 [SECURITY.md](SECURITY.md) 私下报告，不要开公开 Issue。
-- 使用问题与想法欢迎到 Discussions；可复现的缺陷请用 Bug 模板提交，并附代码片段与 `SpringNav` 日志。
-- 版本变更记录见 [CHANGELOG.md](CHANGELOG.md)。
-- `master` 受分支规则保护：禁止删除与强推，合并必须通过 `test (ubuntu-latest)`；维护者保留管理员 bypass。
-- 分支模型与 Fork + PR 合并步骤见 [CONTRIBUTING.md](CONTRIBUTING.md#分支模型)。
+本仓库**只开放阅读和问题反馈，不接受外部 Pull Request**。
+
+- 可复现的 Bug：用 [Bug 模板](https://github.com/Hei-World/SpringNav/issues/new?template=bug_report.yml) 提交，附代码片段与 `SpringNav` 日志。
+- 新功能 / 跳转场景建议：用 [功能建议模板](https://github.com/Hei-World/SpringNav/issues/new?template=feature_request.yml)。
+- 安装、配置、使用问题：到 [Discussions](https://github.com/Hei-World/SpringNav/discussions)。
+- 安全漏洞：按 [SECURITY.md](SECURITY.md) 私密报告，不要开公开 Issue。
+- 代码修改请勿提 PR（仓库已关闭 PR 功能）；如有修复思路，可在 Issue 中说明场景与建议改法，由维护者实现。
+- 其它约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)，版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
