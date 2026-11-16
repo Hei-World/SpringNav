@@ -115,7 +115,7 @@ jobs:
         with:
           node-version: '20'
       - name: Collect native binaries from build matrix
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           merge-multiple: true
           path: native
@@ -139,7 +139,7 @@ jobs:
       contents: write
     steps:
       - name: Download VSIX
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           merge-multiple: true
           path: dist
