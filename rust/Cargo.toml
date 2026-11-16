@@ -2,6 +2,9 @@
 name = "spring-nav"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Native index engine for the SpringNav VS Code extension"
+repository = "https://github.com/Hei-World/SpringNav"
 build = "build.rs"
 
 [lib]
