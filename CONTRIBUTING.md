@@ -34,7 +34,7 @@ SpringNav 以 MIT 协议开源，欢迎使用、反馈和讨论。但本仓库**
 ```bash
 npm ci                     # 必须使用 lockfile
 npm run build              # tsc + cargo build --release，产出 native/spring-nav.<platform>.node
-npm run test:native        # 合成工程自检（85 项）
+npm run test:native        # 合成工程自检（86 项）
 node test/harness.js /path/to/RuoYi-Vue   # 真实项目端到端（32 项）
 cargo test --manifest-path rust/Cargo.toml
 cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings

@@ -182,11 +182,11 @@ fn split_top_level(s: &str, delim: char) -> Vec<String> {
                 quote = Some(c);
                 cur.push(c);
             }
-            '<' | '(' | '[' => {
+            '<' | '(' | '[' | '{' => {
                 d += 1;
                 cur.push(c);
             }
-            '>' | ')' | ']' => {
+            '>' | ')' | ']' | '}' => {
                 d -= 1;
                 cur.push(c);
             }
@@ -297,6 +297,7 @@ fn parse_annotation(t: &str) -> Option<Annotation> {
     let name = caps.get(1)?.as_str().rsplit('.').next()?.to_string();
     let mut paths = Vec::new();
     let mut raw = String::new();
+    let mut path_unresolved = false;
     if let Some(args) = caps.get(2) {
         raw = args.as_str().to_string();
         // Only value/path (or positional) arguments are mapping paths; skip
@@ -316,14 +317,32 @@ fn parse_annotation(t: &str) -> Option<Annotation> {
                     }
                 }
             }
+            let mut quoted = false;
             for q in RE_QUOTED.captures_iter(t) {
                 if let Some(m) = q.get(1) {
+                    quoted = true;
                     paths.push(m.as_str().to_string());
+                }
+            }
+            if !quoted {
+                // Path argument present but not a string literal (constant or
+                // expression): cannot resolve statically.
+                let value = t.split_once('=').map(|(_, v)| v).unwrap_or(t);
+                let cleaned = value
+                    .trim()
+                    .trim_matches(|c: char| c == '{' || c == '}' || c.is_whitespace());
+                if !cleaned.is_empty() {
+                    path_unresolved = true;
                 }
             }
         }
     }
-    Some(Annotation { name, paths, raw })
+    Some(Annotation {
+        name,
+        paths,
+        raw,
+        path_unresolved,
+    })
 }
 
 /// Infer HTTP verbs from mapping annotations.
@@ -358,19 +377,22 @@ fn collect_http_methods(anns: &[Annotation]) -> Vec<String> {
     out
 }
 
+fn is_mapping_annotation(name: &str) -> bool {
+    matches!(
+        name,
+        "RequestMapping"
+            | "GetMapping"
+            | "PostMapping"
+            | "PutMapping"
+            | "DeleteMapping"
+            | "PatchMapping"
+    )
+}
+
 fn collect_paths(anns: &[Annotation]) -> Vec<String> {
     let mut out = Vec::new();
     for a in anns {
-        let n = a.name.as_str();
-        if !matches!(
-            n,
-            "RequestMapping"
-                | "GetMapping"
-                | "PostMapping"
-                | "PutMapping"
-                | "DeleteMapping"
-                | "PatchMapping"
-        ) {
+        if !is_mapping_annotation(&a.name) {
             continue;
         }
         for p in &a.paths {
@@ -544,6 +566,7 @@ fn try_method_decl(
             param_types,
             loc: Loc::new(uri, i as u32, col(first_line, name_byte)),
             paths: Vec::new(),
+            path_unresolved: false,
             http_methods: Vec::new(),
             accessor_field: None,
         },
@@ -1122,6 +1145,9 @@ pub fn parse_java(c: &Candidate) -> Option<FileModel> {
             try_method_decl(line, &lines, i, &c.uri, &model.class_name)
         {
             md.paths = collect_paths(&pending);
+            md.path_unresolved = pending
+                .iter()
+                .any(|a| is_mapping_annotation(&a.name) && a.path_unresolved);
             md.http_methods = collect_http_methods(&pending);
             md.accessor_field = detect_accessor(&lines[i + consumed..], &md.name);
             model.methods.push(md);
@@ -1364,7 +1390,7 @@ mod tests {
     #[test]
     fn mapping_paths_support_relative_and_skip_non_path_args() {
         let mut c = cand(
-            "package x;\n@RestController\n@RequestMapping(\"/chat\")\npublic class C {\n    @PostMapping\n    void add() {}\n    @GetMapping(\"getInfo\")\n    void info() {}\n    @GetMapping(value = \"/typed\", produces = \"application/json\")\n    void typed() {}\n    @RequestMapping(value = {\"/a\", \"/b\"})\n    void many() {}\n}\n",
+            "package x;\n@RestController\n@RequestMapping(\"/chat\")\npublic class C {\n    @PostMapping\n    void add() {}\n    @GetMapping(\"getInfo\")\n    void info() {}\n    @GetMapping(value = \"/typed\", produces = \"application/json\")\n    void typed() {}\n    @RequestMapping(value = {\"/a\", \"/b\"})\n    void many() {}\n    @GetMapping(ApiPaths.USER)\n    void constPath() {}\n}\n",
         );
         c.force = true;
         let m = parse_java(&c).unwrap();
@@ -1376,6 +1402,8 @@ mod tests {
         assert_eq!(get("typed").paths, vec!["/typed"]);
         assert_eq!(get("many").paths, vec!["/a", "/b"]);
         assert!(!get("typed").paths.iter().any(|p| p.contains("application")));
+        assert!(get("constPath").paths.is_empty());
+        assert!(get("constPath").path_unresolved);
     }
 
     #[test]

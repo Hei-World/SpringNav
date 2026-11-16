@@ -980,7 +980,7 @@ function check(name, fn) {
     'package com.example.chat;\nimport org.springframework.web.bind.annotation.*;\n@RestController\n@RequestMapping("/slash/")\npublic class SlashController {\n    @GetMapping\n    public void root() {}\n}\n');
   const chatCtrl = 'src/main/java/com/example/chat/ChatController.java';
   w2(chatCtrl,
-    'package com.example.chat;\nimport org.springframework.web.bind.annotation.*;\n@RestController\n@RequestMapping("/chat")\npublic class ChatController {\n    @PostMapping\n    public void add() {}\n\n    @PutMapping\n    public void update() {}\n\n    @GetMapping\n    public void detail() {}\n\n    @GetMapping("/list")\n    public void list() {}\n\n    @GetMapping("relative")\n    public void relative() {}\n\n    @GetMapping(value = "/typed", produces = "application/json")\n    public void typed() {}\n\n    @RequestMapping(method = {RequestMethod.GET, RequestMethod.POST})\n    public void multi() {}\n\n    public void helper() {}\n}\n');
+    'package com.example.chat;\nimport org.springframework.web.bind.annotation.*;\n@RestController\n@RequestMapping("/chat")\npublic class ChatController {\n    @PostMapping\n    public void add() {}\n\n    @PutMapping\n    public void update() {}\n\n    @GetMapping\n    public void detail() {}\n\n    @GetMapping("/list")\n    public void list() {}\n\n    @GetMapping("relative")\n    public void relative() {}\n\n    @GetMapping(value = "/typed", produces = "application/json")\n    public void typed() {}\n\n    @RequestMapping(method = {RequestMethod.GET, RequestMethod.POST})\n    public void multi() {}\n\n    @GetMapping(ApiPaths.USER)\n    public void constPath() {}\n\n    public void helper() {}\n}\n');
 
   await checkAsync('CTX-00 context fixture indexed', async () => {
     const r = await addon.buildIndex([root2]);
@@ -1113,6 +1113,12 @@ function check(name, fn) {
     }
     const noise = addon.searchPathHits('application');
     if (noise.length) throw new Error('media type indexed as path: ' + JSON.stringify(noise));
+    return 'ok';
+  });
+  check('S-10 constant path is not treated as an empty path', () => {
+    const line = p2(chatCtrl, 'public void constPath()').line;
+    const bad = addon.searchPathHits('chat').filter((h) => h.loc && h.loc.line === line);
+    if (bad.length) throw new Error('constant path indexed as class path: ' + JSON.stringify(bad));
     return 'ok';
   });
   check('S-05 unmapped helper method produces no path entry', () => {

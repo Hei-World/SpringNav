@@ -2,6 +2,18 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。更早版本见 [Releases](https://github.com/Hei-World/SpringNav/releases)。
 
+## [0.3.7] - 2026-11-16
+
+### 修复
+
+- 路径来自常量或表达式（`@GetMapping(ApiPaths.USER)`、`@GetMapping(value = PREFIX + "/x")`）时不再当成「无方法路径」落到类路径，避免生成错误的 `/chat` 条目；此类写法不生成路径条目。
+- 注解参数按逗号切分时把 `{}` 计入嵌套深度，`method = {RequestMethod.GET, RequestMethod.POST}` 不再被拆成两个参数。
+
+### 测试
+
+- Rust 单测保持 20，新增常量路径断言；smoke 85 → 86（S-10）。
+- RuoYi 数据与 0.3.6 一致：132 条路径 / 147 条目，无异常 URL。
+
 ## [0.3.6] - 2026-11-16
 
 ### 修复

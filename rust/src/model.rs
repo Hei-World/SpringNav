@@ -46,6 +46,9 @@ pub struct Annotation {
     pub paths: Vec<String>,
     /// Raw argument text, used to read `method = RequestMethod.GET`.
     pub raw: String,
+    /// A mapping argument looked like a path but was not a string literal
+    /// (constant/expression), so the URL cannot be resolved statically.
+    pub path_unresolved: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -55,6 +58,9 @@ pub struct MethodDecl {
     pub loc: Loc,
     /// Mapping paths declared directly on the method (@GetMapping etc.).
     pub paths: Vec<String>,
+    /// True when a mapping path argument exists but is not a literal; such a
+    /// method must not fall back to the class path.
+    pub path_unresolved: bool,
     /// HTTP verbs inferred from mapping annotations (GET/POST/...).
     pub http_methods: Vec<String>,
     /// For hand-written accessors: the field this get/set/is method reads or

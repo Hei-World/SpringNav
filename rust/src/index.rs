@@ -689,7 +689,7 @@ fn add_file_maps(index: &mut Index, fi: usize) {
                 // class-level @RequestMapping("/chat") + bare @PostMapping =
                 // POST /chat. Only methods with no mapping annotation at all
                 // are skipped.
-                if md.paths.is_empty() && md.http_methods.is_empty() {
+                if md.paths.is_empty() && (md.http_methods.is_empty() || md.path_unresolved) {
                     continue;
                 }
                 let paths: Vec<String> = if md.paths.is_empty() {
@@ -1593,6 +1593,7 @@ mod tests {
                 param_types: vec![],
                 loc: Loc::new("file:///p/A.java", 5, 16),
                 paths: vec!["/go".into()],
+                path_unresolved: false,
                 http_methods: vec!["GET".into()],
                 accessor_field: None,
             }],
