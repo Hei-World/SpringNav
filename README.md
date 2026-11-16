@@ -395,7 +395,7 @@ SpringNav/
 2. **实现**：解析层扩展要沿用「字节等长掩码 + `col()` 边界兜底」；新边必须从 `compute_file_edges` 产出（走标准 k0/k1/k2），以便 `edge_contrib` 自动纳入增量失效；不要另建旁路缓存。
 3. **全量回归**：clippy `-D warnings`、cargo test、`node scripts/smoke.js`、`node test/harness.js`、`npm run compile`、`npm run package`。新场景必须补对应断言（含中文/多字节边界、同名类歧义、跨文件边失效与恢复）。
 4. **基线复测**：全量索引耗时、查询耗时、增量耗时、100 次重建收敛、压力轮 RSS 增量归零、索引计数器零增长，与本文档基线对比，确认无退化。
-5. **提交推送**：`package.json` 版本号递增 → 提交推送 master → 打 `v<version>` tag → CI 自动出 6 架构产物、打全平台 VSIX 并发布 Release。
+5. **提交推送**：`package.json` 版本号递增，**同步 `package-lock.json` 的两处 `version` 字段**（顶层与 `packages[""]`）→ 提交推送 master → 打 `v<version>` tag → CI 自动出 6 架构产物、打全平台 VSIX 并发布 Release。`package-lock.json` 必须入库：CI 的 `package` job 用 `npm ci`，缺了会直接失败。
 6. **同步文档**：功能清单、测试结果、性能基线、已知局限、版本号随改动一起更新到本 README。
 
 关键改动位置速查：
