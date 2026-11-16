@@ -9,7 +9,7 @@ name = "spring_nav"
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = "2"
+napi = "3"
 napi-derive = "2"
 regex = "1"
 toml = "0.8"
