@@ -326,8 +326,8 @@ SN_TARGET=aarch64-unknown-linux-gnu bash scripts/build-native.sh  # Linux x64 �
 触发方式：
 
 - push `v*` tag：全平台构建 + 打包 + **自动发 Release**
-- PR（改动 `rust/` `scripts/` `test/` `package.json` `.github/workflows/`）：跑 `test` 门禁
-- Actions 页面手动 `workflow_dispatch`
+- 任意 PR：只跑 `test` 门禁（clippy / 单测 / smoke / RuoYi harness），多架构构建与打包不执行
+- Actions 页面手动 `workflow_dispatch`：全流程（不出 Release）
 
 > 平台注意：**linux musl 变体不做**——Rust 的 `x86_64-unknown-linux-musl` 不支持编译 `cdylib`（musl libc 无动态加载），napi 原生模块无法用它构建；**macos-13 Intel runner 已退役**，x86_64 macOS 产物改由 arm64 runner 交叉编译。
 
@@ -483,6 +483,8 @@ SpringNav/
 - 安全漏洞请按 [SECURITY.md](SECURITY.md) 私下报告，不要开公开 Issue。
 - 使用问题与想法欢迎到 Discussions；可复现的缺陷请用 Bug 模板提交，并附代码片段与 `SpringNav` 日志。
 - 版本变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+- `master` 受分支规则保护：禁止删除与强推，合并必须通过 `test (ubuntu-latest)`；维护者保留管理员 bypass。
+- 分支模型与 Fork + PR 合并步骤见 [CONTRIBUTING.md](CONTRIBUTING.md#分支模型)。
 
 ---
 
