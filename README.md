@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.74-007ACC)](package.json)
 
-> 当前版本 `0.3.7` ｜ [下载安装包](https://github.com/Hei-World/SpringNav/releases/latest) ｜ MIT License
+> 当前版本 `0.3.8` ｜ [下载安装包](https://github.com/Hei-World/SpringNav/releases/latest) ｜ MIT License
 
 ## 项目说明
 
@@ -99,7 +99,7 @@ spring-nav.<platform>.node（Rust / napi-rs）
 ### 安装
 
 - 从 [Releases](https://github.com/Hei-World/SpringNav/releases/latest) 下载 `spring-nav-<version>.vsix`，在扩展面板右上角 `...` → 「从 VSIX 安装」；
-- 或命令行：`code --install-extension spring-nav-0.3.7.vsix`；
+- 或命令行：`code --install-extension spring-nav-0.3.8.vsix`；
 - 安装包内含 6 个平台的 `.node`，运行时只加载当前平台的一个，其余仅占磁盘、不占内存；
 - 打开含 `pom.xml` / `build.gradle` 的工程后自动异步建索引，状态栏出现 `SpringNav: N 文件` 即就绪。
 
@@ -108,6 +108,7 @@ spring-nav.<platform>.node（Rust / napi-rs）
 - 状态栏悬停可看项目/模块/方法/边数量；点击状态栏或执行 `SpringNav: 重新加载索引` 全量重建。
 - 资源管理器右键项目/模块 → `SpringNav: 重建此项目索引`，不影响其它项目。
 - 多根工作区与多模块项目只扫一次，嵌套根自动去重；模块名显示为相对路径。
+- **多项目严格隔离**：同名类、相同全限定名、相同 Mapper XML 命名空间/语句 id、相同 bean 名都不会跨项目跳转；Maven 多模块工程仍视为同一项目，模块之间可正常跳。
 - 保存文件只重解析该文件；`git pull` 等外部修改需手动重建。
 
 ### 配置

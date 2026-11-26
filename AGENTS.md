@@ -12,7 +12,7 @@
   3. 不构建完整 AST，不保存源码与语法树，只保存解析完成的边与紧凑元数据；
   4. 准确率优先于覆盖率：同名类/多实现/多重载有歧义时返回空，不猜测；
   5. 查询路径不读磁盘、不重新解析文件。
-- 当前版本 `0.3.7`；MIT 协议；仓库公开但**关闭 Pull Request**，只接受 Issue / Discussions 反馈。
+- 当前版本 `0.3.8`；MIT 协议；仓库公开但**关闭 Pull Request**，只接受 Issue / Discussions 反馈。
 
 ## 2. 当前仓库状态（2026-11）
 
@@ -181,12 +181,12 @@ VS Code 设置：
 ```bash
 cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings   # 0 警告
 cargo test --manifest-path rust/Cargo.toml                                  # 19/19
-node scripts/smoke.js                                                       # 86/86
+node scripts/smoke.js                                                       # 94/94
 node test/harness.js /path/to/RuoYi-Vue                                     # 32/32
 npm run compile
 ```
 
-- `scripts/smoke.js`：临时合成工程，覆盖全链路跳转、Lombok、重载、继承、多根、增量、单项目重建、配置热加载、路径搜索；独立上下文夹具 23 条：同名类不混入、祖父类方法、就近覆盖、`@Autowired`/`@Qualifier`、跨文件边失效恢复、泛型返回值（G-01～G-05）、空路径/相对路径/多 verb/尾斜杠/常量路径搜索（S-03～S-10）。
+- `scripts/smoke.js`：临时合成工程，覆盖全链路跳转、Lombok、重载、继承、多根、增量、单项目重建、配置热加载、路径搜索；独立上下文夹具 31 条：同名类不混入、祖父类方法、就近覆盖、`@Autowired`/`@Qualifier`、跨文件边失效恢复、泛型返回值（G-01～G-05）、空路径/相对路径/多 verb/尾斜杠/常量路径搜索（S-03～S-10）、双项目同名 FQCN/XML/bean 隔离（X-00～X-07）。
 - `test/harness.js`：RuoYi-Vue 真实项目；定义/引用双向、回退、字段 ↔ accessor、Lombok、路径元数据、配置、增量；含 `Map<String,String>` / `List<Map<String,Object>>` 返回类型的真实回归（G-01～G-04）。
 - 两者直接加载 `.node`，不依赖 VS Code。
 - 内存专项：100 次重建、12 轮压力（每轮 1000 次保存 + 10 万次查询）、中文边界、`lastPanic`。
@@ -204,7 +204,7 @@ npm run compile
 | 计数器 | 稳定 | `methods=1885` / `calls=4448` / `edge_contrib=210` | 零增长 |
 | skipped / failed | 0 / 0 | 0 / 0 | 无浪费 |
 
-0.3.6/0.3.7（路径搜索补全）A/B 复测：旧/新二进制交错各 20 次，全量索引 84.67 / 84.74 ms（持平）；RuoYi 路径条目 117 → 132、`path_entries` 120 → 147（新增均为真实无路径端点与相对路径）；50 次重建后 RSS 146.6 MB，5 轮压力增量 `11.0 → 11.7 → 11.9 → 11.9 → 11.9` MB 收敛，`heapUsed` 3.4 MB，计数器稳定。
+0.3.6/0.3.7（路径搜索补全）与 0.3.8（多项目隔离）A/B 复测：旧/新二进制交错各 20 次，全量索引 84.67 / 84.74 ms（持平）；RuoYi 路径条目 117 → 132、`path_entries` 120 → 147（新增均为真实无路径端点与相对路径）；50 次重建后 RSS 146.6 MB，5 轮压力增量 `11.0 → 11.7 → 11.9 → 11.9 → 11.9` MB 收敛，`heapUsed` 3.4 MB，计数器稳定。 0.3.8 的 RuoYi 单项目统计与 0.3.7 完全一致（132 路径 / 147 条目 / 6451 边）；索引 81.31 ms vs 82.99 ms；30 次重建 RSS 149.6 MB、heap 3.4 MB，8 轮压力稳定在 +14.5 MB。
 
 **口径**：RSS 是整个 Node 进程（V8 + libuv + Rust 索引 + glibc arena），不是索引大小；V8 堆约 3.5MB，索引净大小约 30MB。压力阶段一次性约 +12MB 是 allocator arena 扩张，多轮后不再增长即证明有界、非泄漏。
 
@@ -272,6 +272,7 @@ test/harness.js      RuoYi 断言（32）
 - 0.3.5：修复泛型返回类型（带空格/嵌套）方法未入索引；新增单测与 smoke/harness 回归。
 - 0.3.6：路径搜索补全——支持无方法路径（`@PostMapping` + 类路径）、相对路径、多 verb 分行、尾斜杠归一化；排除 produces/consumes 等非路径参数。
 - 0.3.7：常量/表达式路径不再误落到类路径；注解数组参数按花括号整体切分。
+- 0.3.8：多根工作区按项目隔离类型解析、实现类、XML、`@Qualifier` 与静态导入，修复跨项目同名文件误跳。
 - 开源治理：仓库公开；关闭 PR，仅保留 Issue/Discussions；移除 Dependabot 自动 PR；master 仅禁删除/强推。
 
 ### 待办 / 可选方向

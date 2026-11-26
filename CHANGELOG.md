@@ -2,6 +2,19 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。更早版本见 [Releases](https://github.com/Hei-World/SpringNav/releases)。
 
+## [0.3.8] - 2026-11-16
+
+### 修复
+
+- **多项目跨跳**：多根工作区里两个项目存在同名类、相同 FQCN、相同 Mapper XML 命名空间/语句 id 或相同 bean 名时，跳转会落到另一个项目。现在所有类型解析、实现类查找、XML 匹配、`@Qualifier` 与静态导入均按引用文件所属项目过滤，跨项目同名符号不再互相干扰。Maven 多模块仍属于同一项目，模块之间跳转不受影响。
+- `by_fqcn` 改为一对多（同一 FQCN 可存在于多个独立项目）；`impls_cache` / `xml_cache` 的 key 加入项目，避免缓存串项目。
+
+### 测试
+
+- Rust 单测 20/20；smoke 86 → **94/94**（新增 X-00～X-07：双项目同名 FQCN 接口、实现、引用、Mapper XML、bean 名、类型名，正反双向验证）。
+- RuoYi 单项目 32/32，索引统计与 0.3.7 完全一致；索引 81.31 ms vs 82.99 ms（与 0.3.7 A/B 交错测量）。
+- 30 次重建 RSS 149.6 MB、heap 3.4 MB；8 轮压力 RSS 稳定在 +14.5 MB，计数器零增长。
+
 ## [0.3.7] - 2026-11-16
 
 ### 修复

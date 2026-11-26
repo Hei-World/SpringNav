@@ -1166,11 +1166,81 @@ function check(name, fn) {
     return 'edge dropped';
   });
 
+  // ---------------------------------------------------------------------
+  // Multi-root isolation: two independent projects contain IDENTICAL FQCNs,
+  // class names, mapper XML namespace/id and bean names. Every jump from
+  // project A must stay inside project A.
+  // ---------------------------------------------------------------------
+  const multi = fs.mkdtempSync(path.join(os.tmpdir(), 'springnav-multi-fixture-'));
+  const projects = [path.join(multi, 'p1'), path.join(multi, 'p2')];
+  const w3 = (project, rel, content) => {
+    const p = path.join(project, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  };
+  for (const project of projects) {
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(path.join(project, 'pom.xml'), '<project/>');
+    w3(project, 'src/main/java/com/example/service/IFooService.java',
+      'package com.example.service;\npublic interface IFooService {\n    void run();\n}\n');
+    w3(project, 'src/main/java/com/example/service/impl/FooServiceImpl.java',
+      'package com.example.service.impl;\nimport com.example.service.IFooService;\npublic class FooServiceImpl implements IFooService {\n    public void run() {}\n}\n');
+    w3(project, 'src/main/java/com/example/domain/User.java',
+      'package com.example.domain;\npublic class User {\n    private String name;\n    public String getName() { return name; }\n}\n');
+    w3(project, 'src/main/java/com/example/mapper/FooMapper.java',
+      'package com.example.mapper;\npublic interface FooMapper {\n    void selectFoo();\n}\n');
+    w3(project, 'src/main/resources/mapper/FooMapper.xml',
+      '<?xml version="1.0"?>\n<mapper namespace="com.example.mapper.FooMapper">\n    <select id="selectFoo">select * from foo</select>\n</mapper>\n');
+    w3(project, 'src/main/java/com/example/web/FooController.java',
+      'package com.example.web;\nimport com.example.service.IFooService;\nimport com.example.domain.User;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.beans.factory.annotation.Qualifier;\npublic class FooController {\n    @Autowired\n    private IFooService fooService;\n    @Qualifier("fooServiceImpl")\n    private IFooService other;\n    void f() {\n        fooService.run();\n        User u = null;\n        u.getName();\n    }\n}\n');
+  }
+  await checkAsync('X-00 multi-project fixture indexed', async () => {
+    const r = await addon.buildIndex(projects);
+    if (r.files !== 12) throw new Error('files=' + r.files);
+    return `files=${r.files}`;
+  });
+  const xr = (rel, needle, off, dir, project = 0) => {
+    const ls = fs.readFileSync(path.join(projects[project], rel), 'utf8').split('\n');
+    for (let i = 0; i < ls.length; i++) {
+      const idx = ls[i].indexOf(needle);
+      if (idx !== -1) {
+        return addon.resolveDirectional(
+          addon.uriForPath(path.join(projects[project], rel)), i, idx + off, ls[i], dir, true);
+      }
+    }
+    throw new Error('needle not found: ' + needle);
+  };
+  const onlyProject = (out, which, name) => {
+    const wrong = out.filter((l) => !l.uri.includes(`/p${which}/`));
+    if (wrong.length) throw new Error(`${name} leaked to other project: ${JSON.stringify(wrong)}`);
+    if (!out.length) throw new Error(name + ' empty');
+    return `-> ${out.length} location(s), all in p${which}`;
+  };
+  const xCtrl = 'src/main/java/com/example/web/FooController.java';
+  const xIface = 'src/main/java/com/example/service/IFooService.java';
+  const xMapper = 'src/main/java/com/example/mapper/FooMapper.java';
+
+  check('X-01 call resolves inside its own project only', () =>
+    onlyProject(xr(xCtrl, 'fooService.run()', 11, 'down'), 1, 'call'));
+  check('X-02 interface down resolves to own impl only', () =>
+    onlyProject(xr(xIface, 'void run();', 5, 'down'), 1, 'impl'));
+  check('X-03 interface up resolves to own caller only', () =>
+    onlyProject(xr(xIface, 'void run();', 5, 'up'), 1, 'caller'));
+  check('X-04 mapper method resolves to own XML only', () =>
+    onlyProject(xr(xMapper, 'selectFoo();', 0, 'down'), 1, 'xml'));
+  check('X-05 @Qualifier resolves to own bean only', () =>
+    onlyProject(xr(xCtrl, '"fooServiceImpl"', 1, 'down'), 1, 'bean'));
+  check('X-06 type name resolves to own class only', () =>
+    onlyProject(xr(xCtrl, 'User u', 0, 'down'), 1, 'type'));
+  check('X-07 project B stays inside project B', () =>
+    onlyProject(xr(xCtrl, 'fooService.run()', 11, 'down', 1), 2, 'call'));
+
   const failed = results.filter((r) => !r).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed`);
   fs.rmSync(root, { recursive: true, force: true });
   fs.rmSync(parent, { recursive: true, force: true });
   fs.rmSync(root2, { recursive: true, force: true });
+  fs.rmSync(multi, { recursive: true, force: true });
   process.exit(failed ? 1 : 0);
 })().catch((e) => {
   console.error('FATAL', e);

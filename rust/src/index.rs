@@ -27,7 +27,8 @@ pub struct Index {
     pub files: Vec<FileModel>,
     pub by_uri: HashMap<String, usize>,
     pub by_simple: HashMap<String, Vec<usize>>,
-    pub by_fqcn: HashMap<String, usize>,
+    /// FQCN -> file indices (can repeat across independent projects)
+    pub by_fqcn: HashMap<String, Vec<usize>>,
     /// interface simple/FQCN -> implementing class file indices
     pub interface_impls: HashMap<String, Vec<usize>>,
     /// (file idx, method name) -> method indices (overloads)
@@ -57,10 +58,10 @@ pub struct Index {
     pub by_package: HashMap<String, Vec<usize>>,
     /// call-site Loc -> owning file idx (for incremental invalidation).
     pub call_owner: HashMap<Loc, usize>,
-    /// Cached interface -> impl file indices, keyed by interface FQCN.
-    pub impls_cache: HashMap<String, Vec<usize>>,
-    /// Cached (namespace, method) -> XML statement Locs.
-    pub xml_cache: HashMap<(String, String), Vec<Loc>>,
+    /// Cached interface -> impl file indices, keyed by (FQCN, project).
+    pub impls_cache: HashMap<(String, String), Vec<usize>>,
+    /// Cached (namespace, method, project) -> XML statement Locs.
+    pub xml_cache: HashMap<(String, String, String), Vec<Loc>>,
     /// Per-file edge contributions (source file idx -> triples).
     pub edge_contrib: HashMap<usize, Vec<Triple>>,
     /// Files skipped because they exceeded the size limit.
@@ -194,13 +195,61 @@ fn classify(m: &FileModel, cfg: &Config) -> Role {
     Role::Other
 }
 
+fn same_project(index: &Index, i: usize, project: Option<&str>) -> bool {
+    match project {
+        Some(p) => index.files[i].project_root == p,
+        None => true,
+    }
+}
+
+fn push_unique(out: &mut Vec<usize>, i: usize) {
+    if !out.contains(&i) {
+        out.push(i);
+    }
+}
+
+/// Resolve a type name, optionally restricted to one project root. Multi-root
+/// workspaces may contain several projects with identical FQCNs; without the
+/// project filter a jump can land in a different project.
+fn resolve_type_files_in(index: &Index, t: &str, project: Option<&str>) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    let simple = strip_to_simple(t);
+    if let Some(v) = index.by_fqcn.get(t) {
+        for &i in v {
+            if same_project(index, i, project) {
+                push_unique(&mut out, i);
+            }
+        }
+    }
+    if !simple.is_empty() {
+        if let Some(v) = index.by_simple.get(simple.as_str()) {
+            for &i in v {
+                if same_project(index, i, project) {
+                    push_unique(&mut out, i);
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        if let Some(v) = index.by_simple.get(t) {
+            for &i in v {
+                if same_project(index, i, project) {
+                    push_unique(&mut out, i);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Context-aware type resolution: a SIMPLE type name is resolved against the
 /// referencing file's imports first, then its own package, then a unique
-/// project-wide simple name. Ambiguous names (two `User` classes) resolve to
-/// NOTHING instead of both — accuracy first.
+/// simple name **inside the same project**. Candidates from other projects are
+/// never used, and ambiguous names resolve to nothing (accuracy first).
 pub(crate) fn resolve_type_files_ctx(index: &Index, fi: usize, t: &str) -> Vec<usize> {
+    let project = index.files[fi].project_root.as_str();
     if t.contains('.') {
-        return resolve_type_files(index, t); // FQCN: exact
+        return resolve_type_files_in(index, t, Some(project));
     }
     let simple = strip_to_simple(t);
     if simple.is_empty() {
@@ -212,9 +261,11 @@ pub(crate) fn resolve_type_files_ctx(index: &Index, fi: usize, t: &str) -> Vec<u
     // 1) explicit imports of the referencing file
     for imp in &m.imports {
         if imp.as_str() == simple || imp.ends_with(&suffix) {
-            if let Some(&tf) = index.by_fqcn.get(imp.as_str()) {
-                if !out.contains(&tf) {
-                    out.push(tf);
+            if let Some(v) = index.by_fqcn.get(imp.as_str()) {
+                for &tf in v {
+                    if same_project(index, tf, Some(project)) {
+                        push_unique(&mut out, tf);
+                    }
                 }
             }
         }
@@ -222,7 +273,7 @@ pub(crate) fn resolve_type_files_ctx(index: &Index, fi: usize, t: &str) -> Vec<u
     if !out.is_empty() {
         return out;
     }
-    // 2) same package
+    // 2) same package (within the same project only)
     let pkg = m
         .fqcn
         .rsplit_once('.')
@@ -230,39 +281,25 @@ pub(crate) fn resolve_type_files_ctx(index: &Index, fi: usize, t: &str) -> Vec<u
         .unwrap_or_default();
     if let Some(files) = index.by_package.get(&pkg) {
         for &tf in files {
-            if index.files[tf].class_name == simple && !out.contains(&tf) {
-                out.push(tf);
+            if same_project(index, tf, Some(project))
+                && index.files[tf].class_name == simple
+            {
+                push_unique(&mut out, tf);
             }
         }
     }
     if !out.is_empty() {
         return out;
     }
-    // 3) unique project-wide simple name
+    // 3) unique simple name inside the current project
     if let Some(v) = index.by_simple.get(&simple) {
-        if v.len() == 1 {
-            out.push(v[0]);
-        }
-    }
-    out
-}
-
-pub(crate) fn resolve_type_files(index: &Index, t: &str) -> Vec<usize> {
-    let simple = strip_to_simple(t);
-    let mut out: Vec<usize> = Vec::new();
-    if let Some(&i) = index.by_fqcn.get(t) {
-        out.push(i);
-    }
-    if let Some(v) = index.by_simple.get(&simple) {
-        for &i in v {
-            if !out.contains(&i) {
-                out.push(i);
-            }
-        }
-    }
-    if out.is_empty() {
-        if let Some(v) = index.by_simple.get(t) {
-            out.extend(v.iter().copied());
+        let local: Vec<usize> = v
+            .iter()
+            .copied()
+            .filter(|&i| same_project(index, i, Some(project)))
+            .collect();
+        if local.len() == 1 {
+            out.push(local[0]);
         }
     }
     out
@@ -383,16 +420,16 @@ fn name_related(interface: &str, impl_name: &str) -> bool {
 
 fn find_impls(index: &Index, si: usize, cfg: &Config) -> Vec<usize> {
     let m = &index.files[si];
-    let key = m.fqcn.clone();
+    let project = m.project_root.clone();
+    let key = (m.fqcn.clone(), project.clone());
     if let Some(v) = index.impls_cache.get(&key) {
         return v.clone();
     }
     let mut out: Vec<usize> = Vec::new();
-    let project = m.project_root.clone();
     if let Some(alias) = cfg
         .alias_for(&project, &m.class_name)
         .or_else(|| cfg.alias_for(&project, &m.fqcn)) {
-        for i in resolve_type_files(index, alias) {
+        for i in resolve_type_files_in(index, alias, Some(&project)) {
             if !out.contains(&i) {
                 out.push(i);
             }
@@ -401,7 +438,7 @@ fn find_impls(index: &Index, si: usize, cfg: &Config) -> Vec<usize> {
     for k in [&m.class_name, &m.fqcn] {
         if let Some(v) = index.interface_impls.get(k) {
             for &i in v {
-                if !out.contains(&i) {
+                if same_project(index, i, Some(&project)) && !out.contains(&i) {
                     out.push(i);
                 }
             }
@@ -415,7 +452,8 @@ fn find_impls(index: &Index, si: usize, cfg: &Config) -> Vec<usize> {
                 DEFAULT_IMPL_PATTERNS.iter().map(|s| s.to_string()).collect()
             });
         for (i, f) in index.files.iter().enumerate() {
-            if f.role == Role::ServiceImpl
+            if f.project_root == project
+                && f.role == Role::ServiceImpl
                 && patterns.iter().any(|p| glob_match(p, &f.class_name))
                 && name_related(&m.class_name, &f.class_name)
                 && !out.contains(&i)
@@ -425,7 +463,8 @@ fn find_impls(index: &Index, si: usize, cfg: &Config) -> Vec<usize> {
         }
         if out.is_empty() {
             for (i, f) in index.files.iter().enumerate() {
-                if f.role == Role::ServiceImpl
+                if f.project_root == project
+                    && f.role == Role::ServiceImpl
                     && name_related(&m.class_name, &f.class_name)
                     && !out.contains(&i)
                 {
@@ -438,7 +477,10 @@ fn find_impls(index: &Index, si: usize, cfg: &Config) -> Vec<usize> {
 }
 
 fn cache_impls(index: &mut Index, si: usize, cfg: &Config) {
-    let key = index.files[si].fqcn.clone();
+    let key = (
+        index.files[si].fqcn.clone(),
+        index.files[si].project_root.clone(),
+    );
     let v = find_impls(index, si, cfg);
     index.impls_cache.insert(key, v);
 }
@@ -446,14 +488,19 @@ fn cache_impls(index: &mut Index, si: usize, cfg: &Config) {
 /// XML statement lookup for a mapper method. Accuracy-first: EXACT
 /// (namespace, id) only — loose prefix/contains matching produced wrong
 /// edges (e.g. selectUserList matching selectUserIdByPhonenumber).
-fn cached_fuzzy_xml(index: &Index, ns: &str, name: &str) -> Vec<Loc> {
-    let key = (ns.to_string(), name.to_string());
+fn cached_fuzzy_xml(index: &Index, ns: &str, name: &str, project: &str) -> Vec<Loc> {
+    let key = (ns.to_string(), name.to_string(), project.to_string());
     if let Some(v) = index.xml_cache.get(&key) {
         return v.clone();
     }
     let mut out = Vec::new();
-    if let Some(locs) = index.xml_index.get(&(ns.to_string(), name.to_string())) {
-        out.extend(locs.iter().cloned());
+    let key = (ns.to_string(), name.to_string());
+    if let (Some(locs), Some(owners)) = (index.xml_index.get(&key), index.xml_owner.get(&key)) {
+        for (loc, &owner) in locs.iter().zip(owners.iter()) {
+            if index.files[owner].project_root == project {
+                out.push(loc.clone());
+            }
+        }
     }
     if out.is_empty() {
         // Namespace suffix mismatch fallback (mapper interface in a
@@ -461,16 +508,23 @@ fn cached_fuzzy_xml(index: &Index, ns: &str, name: &str) -> Vec<Loc> {
         let simple = ns.rsplit('.').next().unwrap_or(ns);
         for ((n, id), locs) in &index.xml_index {
             if n.ends_with(simple) && id == name {
-                out.extend(locs.iter().cloned());
+                let key = (n.clone(), id.clone());
+                if let Some(owners) = index.xml_owner.get(&key) {
+                    for (loc, &owner) in locs.iter().zip(owners.iter()) {
+                        if index.files[owner].project_root == project {
+                            out.push(loc.clone());
+                        }
+                    }
+                }
             }
         }
     }
     out
 }
 
-fn cache_xml(index: &mut Index, ns: &str, name: &str) {
-    let key = (ns.to_string(), name.to_string());
-    let v = cached_fuzzy_xml(index, ns, name);
+fn cache_xml(index: &mut Index, ns: &str, name: &str, project: &str) {
+    let key = (ns.to_string(), name.to_string(), project.to_string());
+    let v = cached_fuzzy_xml(index, ns, name, project);
     index.xml_cache.insert(key, v);
 }
 
@@ -649,7 +703,11 @@ fn add_file_maps(index: &mut Index, fi: usize) {
             .entry(m.class_name.clone())
             .or_default()
             .push(fi);
-        index.by_fqcn.insert(m.fqcn.clone(), fi);
+        index
+            .by_fqcn
+            .entry(m.fqcn.clone())
+            .or_default()
+            .push(fi);
         for s in &m.supers {
             index.interface_impls.entry(s.clone()).or_default().push(fi);
         }
@@ -871,7 +929,10 @@ fn remove_file_maps(index: &mut Index, fi: usize) {
     for k in empty_keys {
         index.by_simple.remove(&k);
     }
-    index.by_fqcn.retain(|_, v| *v != fi);
+    for v in index.by_fqcn.values_mut() {
+        v.retain(|&x| x != fi);
+    }
+    index.by_fqcn.retain(|_, v| !v.is_empty());
     for v in index.by_package.values_mut() {
         v.retain(|x| *x != fi);
     }
@@ -1091,7 +1152,7 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
         cache_impls(index, fi, cfg);
         let impls = index
             .impls_cache
-            .get(&m.fqcn)
+            .get(&(m.fqcn.clone(), m.project_root.clone()))
             .cloned()
             .unwrap_or_default();
         for md in &m.methods {
@@ -1108,16 +1169,24 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
     if m.role == Role::Mapper {
         let ns = m.fqcn.clone();
         for md in &m.methods {
-            let mut stmts = index
-                .xml_index
-                .get(&(ns.clone(), md.name.clone()))
-                .cloned()
-                .unwrap_or_default();
+            let xml_key = (ns.clone(), md.name.clone());
+            let mut stmts = match (
+                index.xml_index.get(&xml_key),
+                index.xml_owner.get(&xml_key),
+            ) {
+                (Some(locs), Some(owners)) => locs
+                    .iter()
+                    .zip(owners.iter())
+                    .filter(|(_, &owner)| index.files[owner].project_root == m.project_root)
+                    .map(|(loc, _)| loc.clone())
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
             if stmts.is_empty() {
-                cache_xml(index, &ns, &md.name);
+                cache_xml(index, &ns, &md.name, &m.project_root);
                 stmts = index
                     .xml_cache
-                    .get(&(ns.clone(), md.name.clone()))
+                    .get(&(ns.clone(), md.name.clone(), m.project_root.clone()))
                     .cloned()
                     .unwrap_or_default();
             }
@@ -1133,7 +1202,12 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
         let target = index
             .by_fqcn
             .get(&ns)
-            .map(|&mi| index.files[mi].class_loc.clone());
+            .and_then(|v| {
+                v.iter()
+                    .copied()
+                    .find(|&mi| index.files[mi].project_root == m.project_root)
+            })
+            .map(|mi| index.files[mi].class_loc.clone());
         if let (Some(loc), Some(t)) = (&m.namespace_loc, target) {
             out.push(k2(loc.clone(), t));
         }
@@ -1219,9 +1293,14 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
                     .iter()
                     .find(|(_, mem)| mem == &fr.name)
                 {
-                    if let Some(&cf) = index.by_fqcn.get(cls_fqcn) {
-                        if let Some(fd) = index.files[cf].fields.iter().find(|x| x.name == fr.name) {
-                            out.push(k1(fr.loc.clone(), fd.loc.clone()));
+                    if let Some(v) = index.by_fqcn.get(cls_fqcn) {
+                        for &cf in v {
+                            if index.files[cf].project_root != m.project_root {
+                                continue;
+                            }
+                            if let Some(fd) = index.files[cf].fields.iter().find(|x| x.name == fr.name) {
+                                out.push(k1(fr.loc.clone(), fd.loc.clone()));
+                            }
                         }
                     }
                 }
@@ -1285,14 +1364,32 @@ fn compute_file_edges(index: &mut Index, fi: usize, cfg: &Config) -> Vec<Triple>
         {
             continue;
         }
-        let mut cands = index.by_simple.get(val).cloned().unwrap_or_default();
+        let mut cands: Vec<usize> = index
+            .by_simple
+            .get(val)
+            .map(|v| {
+                v.iter()
+                    .copied()
+                    .filter(|&i| index.files[i].project_root == m.project_root)
+                    .collect()
+            })
+            .unwrap_or_default();
         if cands.is_empty() {
             let mut chars: Vec<char> = val.chars().collect();
             if let Some(c) = chars.first_mut() {
                 *c = c.to_ascii_uppercase();
             }
             let pascal: String = chars.into_iter().collect();
-            cands = index.by_simple.get(&pascal).cloned().unwrap_or_default();
+            cands = index
+                .by_simple
+                .get(&pascal)
+                .map(|v| {
+                    v.iter()
+                        .copied()
+                        .filter(|&i| index.files[i].project_root == m.project_root)
+                        .collect()
+                })
+                .unwrap_or_default();
         }
         if cands.len() == 1 {
             out.push(k2(loc.clone(), index.files[cands[0]].class_loc.clone()));
